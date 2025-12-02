@@ -13,6 +13,7 @@ import pytest
 import torch
 
 # First Party
+from lmcache.accelerator import accelerator
 from lmcache.config import LMCacheEngineMetadata
 from lmcache.v1.cache_engine import LMCacheEngineBuilder
 from lmcache.v1.memory_management import MixedMemoryAllocator
@@ -65,7 +66,7 @@ def patch_mixed_allocator():
 
     def fake_mixed_close(self):
         if not self._unregistered:
-            torch.cuda.synchronize()
+            accelerator.synchronize()
             # torch.cuda.cudart().cudaHostUnregister(self.buffer.data_ptr())
             self._unregistered = True
 
@@ -115,7 +116,7 @@ def patch_pin_allocator():
 
     def fake_pin_close(self):
         if not self._unregistered:
-            torch.cuda.synchronize()
+            accelerator.synchronize()
             # torch.cuda.cudart().cudaHostUnregister(self.buffer.data_ptr())
             self._unregistered = True
 

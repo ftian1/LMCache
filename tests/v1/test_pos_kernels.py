@@ -7,12 +7,13 @@ import sys
 print("PYTEST sys.path:", sys.path)
 
 # First Party
+from lmcache.accelerator import accelerator
 from lmcache.v1.compute.positional_encoding import get_fused_rope
 
 
 @pytest.mark.skipif(
-    not torch.cuda.is_available() and not torch.xpu.is_available(),
-    reason="TODO: Add non CUDA implementations for CUDA enhanced functions",
+    not accelerator,
+    reason="TODO: Add other accelerator implementations for these enhanced functions",
 )
 def test_rope():
     head_dim = 128
