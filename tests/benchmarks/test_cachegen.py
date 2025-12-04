@@ -55,7 +55,7 @@ def to_blob(kv_tuples):
 @pytest.mark.parametrize("fmt", ["vllm", "huggingface"])
 @pytest.mark.parametrize("chunk_size", [64, 256, 768])
 @pytest.mark.skipif(
-    not accelerator,
+    accelerator.name == "cpu",
     reason=(
         "TODO: Add other accelerator implementation to CacheGenSerializer/Deserializer",
     ),

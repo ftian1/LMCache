@@ -1701,8 +1701,7 @@ class GPUMemoryAllocator(MemoryAllocatorInterface):
         :param int size: The size of the GPU memory in bytes.
         :param Optional[int] align_bytes: The byte alignment for allocations.
         """
-        if not accelerator:
-            device = "cpu"
+        device = accelerator.name
 
         self.tensor = torch.empty(size, dtype=torch.uint8, device=device)
 
@@ -1785,7 +1784,7 @@ class AdHocMemoryAllocator(MemoryAllocatorInterface):
         """
         :param str device: The device of the ad hoc memory allocator.
         """
-        if not accelerator:
+        if accelerator.name == "cpu":
             self.device = "cpu"
         else:
             self.device = device

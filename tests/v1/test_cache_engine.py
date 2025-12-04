@@ -35,7 +35,7 @@ from .utils import (
 
 
 @pytest.mark.skipif(
-    not accelerator,
+    accelerator.name == "cpu",
     reason="TODO: Add other accelerator implementation to VLLMPagedMemGPUConnectorV2",
 )
 def test_paged_same_retrieve_store(autorelease_v1):
@@ -118,7 +118,7 @@ def test_paged_same_retrieve_store(autorelease_v1):
 @pytest.mark.parametrize("backend", ["cpu", "local_disk", "remote", "remote_cachegen"])
 @pytest.mark.parametrize("lmserver_v1_process", ["cpu"], indirect=True)
 @pytest.mark.skipif(
-    not accelerator,
+    accelerator.name == "cpu",
     reason="TODO: Add other accelerator implementation to VLLMPagedMemGPUConnectorV2",
 )
 def test_paged_retrieve_prefix(
@@ -234,7 +234,7 @@ def test_paged_retrieve_prefix(
 )
 @pytest.mark.parametrize("lmserver_v1_process", ["cpu"], indirect=True)
 @pytest.mark.skipif(
-    not accelerator,
+    accelerator.name == "cpu",
     reason="TODO: Add other accelerator implementation to VLLMPagedMemGPUConnectorV2",
 )
 def test_paged_store_offset(
@@ -342,7 +342,7 @@ def test_paged_store_offset(
     ],
 )
 @pytest.mark.skipif(
-    not accelerator,
+    accelerator.name == "cpu",
     reason="TODO: Add other accelerator implementation to VLLMPagedMemGPUConnectorV2",
 )
 def test_paged_mixed_retrieve(fmt, chunk_size, backend, autorelease_v1):
@@ -480,7 +480,7 @@ def test_paged_mixed_retrieve(fmt, chunk_size, backend, autorelease_v1):
 
 @pytest.mark.parametrize("fmt", ["vllm"])
 @pytest.mark.skipif(
-    not accelerator,
+    accelerator.name == "cpu",
     reason="TODO: Add other accelerator implementation to VLLMPagedMemGPUConnectorV2",
 )
 def test_paged_store_kv_tensors_mask(fmt, autorelease_v1):
@@ -640,7 +640,7 @@ def test_paged_store_kv_tensors_mask(fmt, autorelease_v1):
 )
 @pytest.mark.parametrize("lmserver_v1_process", ["cpu"], indirect=True)
 @pytest.mark.skipif(
-    not accelerator,
+    accelerator.name == "cpu",
     reason="TODO: Add other accelerator implementation to VLLMPagedMemGPUConnectorV2",
 )
 def test_paged_hierarchy_retrieve(
@@ -776,7 +776,7 @@ def test_paged_hierarchy_retrieve(
     ],
 )
 @pytest.mark.skipif(
-    not accelerator,
+    accelerator.name == "cpu",
     reason="TODO: Add other accelerator implementation to VLLMPagedMemGPUConnectorV2",
 )
 def test_paged_prefetch_retrieve(backend, prefetch_from, autorelease_v1):
@@ -908,7 +908,7 @@ def test_paged_prefetch_retrieve(backend, prefetch_from, autorelease_v1):
 @pytest.mark.no_shared_allocator
 @pytest.mark.parametrize("lmserver_v1_process", ["cpu"], indirect=True)
 @pytest.mark.skipif(
-    not accelerator,
+    accelerator.name == "cpu",
     reason="TODO: Add other accelerator implementation to VLLMPagedMemGPUConnectorV2",
 )
 def test_paged_mem_leak(fmt, chunk_size, backend, lmserver_v1_process, autorelease_v1):
@@ -998,7 +998,7 @@ def test_paged_mem_leak(fmt, chunk_size, backend, lmserver_v1_process, autorelea
 )
 @pytest.mark.no_shared_allocator
 @pytest.mark.skipif(
-    not accelerator,
+    accelerator.name == "cpu",
     reason="TODO: Add other accelerator implementation to VLLMPagedMemGPUConnectorV2",
 )
 def test_paged_retrieve_after_eviction(fmt, chunk_size, backend, autorelease_v1):
@@ -1140,7 +1140,7 @@ def test_builder(autorelease_v1):
 
 @pytest.mark.no_shared_allocator
 @pytest.mark.skipif(
-    not accelerator,
+    accelerator.name == "cpu",
     reason="TODO: Add other accelerator implementation to VLLMPagedMemGPUConnectorV2",
 )
 def test_force_store_wait(autorelease_v1):
@@ -1208,7 +1208,7 @@ def test_force_store_wait(autorelease_v1):
 
 
 @pytest.mark.skipif(
-    not accelerator,
+    accelerator.name == "cpu",
     reason="TODO: Add other accelerator implementation to VLLMPagedMemGPUConnectorV2",
 )
 def test_builder_destroy(autorelease_v1):
@@ -1260,7 +1260,7 @@ def test_builder_destroy(autorelease_v1):
 
 
 @pytest.mark.skipif(
-    not accelerator,
+    accelerator.name == "cpu",
     reason="TODO: Add other accelerator implementation to VLLMPagedMemGPUConnectorV2",
 )
 def test_builder_destroy_multiple_instances(autorelease_v1):
@@ -1317,8 +1317,8 @@ def test_builder_destroy_multiple_instances(autorelease_v1):
 
 
 @pytest.mark.skipif(
-    not accelerator.name == "cuda",
-    reason="Requires other accelerator for test_multi_device_backends",
+    not torch.cuda.is_available(),
+    reason="Requires CUDA for test_multi_device_backends",
 )
 def test_multi_device_backends(autorelease_v1):
     """Test running GPU-related backend with local CPU backends

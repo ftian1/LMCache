@@ -237,7 +237,7 @@ def test_server_running(server_process: mp.Process):
 
 
 @pytest.mark.skipif(
-    not accelerator,
+    accelerator.name == "cpu",
     reason="Register/Unregister KV cache requires supported accelerator devices",
 )
 def test_register_unregister_kv_cache(
@@ -268,7 +268,7 @@ def test_register_unregister_kv_cache(
 
 
 @pytest.mark.skipif(
-    not accelerator,
+    accelerator.name == "cpu",
     reason="Store and Lookup require accelerator",
 )
 def test_store_and_lookup(
@@ -317,7 +317,7 @@ def test_store_and_lookup(
 
 
 @pytest.mark.skipif(
-    not accelerator,
+    accelerator.name == "cpu",
     reason="Store, Retrieve, and Verify require accelerator",
 )
 def test_store_retrieve_verify(
@@ -379,7 +379,7 @@ def test_store_retrieve_verify(
 
 
 @pytest.mark.skipif(
-    not accelerator,
+    accelerator.name == "cpu",
     reason="Partial miss retrieval requires accelerator",
 )
 def test_retrieve_partial_miss(
@@ -447,7 +447,7 @@ def test_retrieve_partial_miss(
 
 
 @pytest.mark.skipif(
-    not accelerator,
+    accelerator.name == "cpu",
     reason="Multiple retrieve operations require accelerator",
 )
 def test_multiple_retrieve_operations(
@@ -542,7 +542,7 @@ def test_multiple_retrieve_operations(
 
 
 @pytest.mark.skipif(
-    not accelerator,
+    accelerator.name == "cpu",
     reason="Multiple store operations require accelerator",
 )
 def test_multiple_store_operations(
@@ -598,7 +598,10 @@ def test_multiple_store_operations(
     assert all(lookup_result), "All stored keys from both batches should exist"
 
 
-@pytest.mark.skipif(not accelerator, reason="Get chunk size requires accelerator")
+@pytest.mark.skipif(
+    accelerator.name == "cpu",
+    reason="Get chunk size requires accelerator",
+)
 def test_get_chunk_size(
     client: MessageQueueClient,
 ):

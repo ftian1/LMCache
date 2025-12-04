@@ -39,7 +39,7 @@ def to_blob(kv_tuples):
 
 @pytest.mark.parametrize("chunk_size", [16, 128, 256])
 @pytest.mark.skipif(
-    not accelerator,
+    accelerator.name == "cpu",
     reason="TODO: Add other accelerator implementation to CacheGenSerializer",
 )
 def test_cachegen_encoder(chunk_size):
@@ -79,7 +79,7 @@ def test_cachegen_encoder(chunk_size):
 @pytest.mark.parametrize("fmt", ["vllm", "huggingface"])
 @pytest.mark.parametrize("chunk_size", [16, 128, 256])
 @pytest.mark.skipif(
-    not accelerator,
+    accelerator.name == "cpu",
     reason="TODO: Add other accelerator implementation to CacheGenSerializer",
 )
 def test_cachegen_decoder(fmt, chunk_size):
@@ -105,7 +105,7 @@ def test_cachegen_decoder(fmt, chunk_size):
 
 @pytest.mark.parametrize("fmt", ["vllm", "huggingface"])
 @pytest.mark.skipif(
-    not accelerator,
+    accelerator.name == "cpu",
     reason="TODO: Add other accelerator implementation to CacheGenSerializer",
 )
 def test_cachegen_unmatched_size(fmt):

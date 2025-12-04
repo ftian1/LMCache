@@ -179,7 +179,7 @@ def test_messaging_future_complex_type():
 
 
 @pytest.mark.skipif(
-    not accelerator,
+    accelerator.name == "cpu",
     reason="GPU is required for GPUMessagingFuture tests",
 )
 def test_gpu_messaging_future_basic_usage():
@@ -221,7 +221,7 @@ def test_gpu_messaging_future_basic_usage():
 
 
 @pytest.mark.skipif(
-    not accelerator,
+    accelerator.name == "cpu",
     reason="GPU is required for GPUMessagingFuture tests",
 )
 def test_gpu_messaging_future_with_thread():
@@ -263,7 +263,7 @@ def test_gpu_messaging_future_with_thread():
 
 
 @pytest.mark.skipif(
-    not accelerator,
+    accelerator.name == "cpu",
     reason="GPU is required for GPUMessagingFuture tests",
 )
 def test_gpu_messaging_future_wait_no_timeout():
@@ -301,7 +301,7 @@ def test_gpu_messaging_future_wait_no_timeout():
 
 
 @pytest.mark.skipif(
-    not accelerator,
+    accelerator.name == "cpu",
     reason="GPU is required for GPUMessagingFuture tests",
 )
 def test_gpu_messaging_future_wait_with_timeout_success():
@@ -337,7 +337,7 @@ def test_gpu_messaging_future_wait_with_timeout_success():
 
 
 @pytest.mark.skipif(
-    not accelerator,
+    accelerator.name == "cpu",
     reason="GPU is required for GPUMessagingFuture tests",
 )
 def test_gpu_messaging_future_wait_timeout_reached():
@@ -358,7 +358,7 @@ def test_gpu_messaging_future_wait_timeout_reached():
 
 
 @pytest.mark.skipif(
-    not accelerator,
+    accelerator.name == "cpu",
     reason="GPU is required for GPUMessagingFuture tests",
 )
 def test_gpu_messaging_future_result_with_timeout_success():
@@ -393,7 +393,7 @@ def test_gpu_messaging_future_result_with_timeout_success():
 
 
 @pytest.mark.skipif(
-    not accelerator,
+    accelerator.name == "cpu",
     reason="GPU is required for GPUMessagingFuture tests",
 )
 def test_gpu_messaging_future_result_timeout_reached():
@@ -411,7 +411,7 @@ def test_gpu_messaging_future_result_timeout_reached():
 
 
 @pytest.mark.skipif(
-    not accelerator,
+    accelerator.name == "cpu",
     reason="GPU is required for GPUMessagingFuture tests",
 )
 def test_gpu_messaging_future_multiple_result_calls():
@@ -444,7 +444,7 @@ def test_gpu_messaging_future_multiple_result_calls():
 
 
 @pytest.mark.skipif(
-    not accelerator,
+    accelerator.name == "cpu",
     reason="GPU is required for GPUMessagingFuture tests",
 )
 def test_gpu_messaging_future_query_before_and_after():
@@ -478,7 +478,7 @@ def test_gpu_messaging_future_query_before_and_after():
 
 
 @pytest.mark.skipif(
-    not accelerator,
+    accelerator.name == "cpu",
     reason="GPU is required for GPUMessagingFuture tests",
 )
 def test_gpu_messaging_future_complex_type():
@@ -514,7 +514,7 @@ def test_gpu_messaging_future_complex_type():
 
 
 @pytest.mark.skipif(
-    not accelerator,
+    accelerator.name == "cpu",
     reason="GPU is required for GPUMessagingFuture tests",
 )
 def test_messaging_future_to_future():
@@ -551,7 +551,7 @@ def test_messaging_future_to_future():
 
 
 @pytest.mark.skipif(
-    not accelerator,
+    accelerator.name == "cpu",
     reason="GPU is required for GPUMessagingFuture tests",
 )
 def test_gpu_messaging_future_with_explicit_device():

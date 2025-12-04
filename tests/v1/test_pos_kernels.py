@@ -14,7 +14,7 @@ print("PYTEST sys.path:", sys.path)
 
 
 @pytest.mark.skipif(
-    not accelerator,
+    accelerator.name == "cpu",
     reason="TODO: Add other accelerator implementations for these enhanced functions",
 )
 def test_rope():

@@ -89,7 +89,7 @@ def patch_pin_allocator():
 @pytest.mark.parametrize("use_gpu", [True, False])
 @pytest.mark.parametrize("use_mla", [True, False])
 @pytest.mark.skipif(
-    not accelerator,
+    accelerator.name == "cpu",
     reason="TODO: Add other accelerator implementation to VLLMPagedMemGPUConnectorV2",
 )
 def test_vllm_paged_connector_v2_with_gpu_and_mla(use_gpu, use_mla):
@@ -188,7 +188,7 @@ def test_vllm_paged_connector_v2_with_gpu_and_mla(use_gpu, use_mla):
 
 @pytest.mark.parametrize("use_gpu", [True])
 @pytest.mark.skipif(
-    not accelerator,
+    accelerator.name == "cpu",
     reason=(
         "TODO: Add other accelerator implementation to "
         "VLLMPagedMemLayerwiseGPUConnector"
@@ -295,7 +295,7 @@ def test_layerwise_vllm_paged_connector_with_gpu(use_gpu):
 
 @pytest.mark.parametrize("use_gpu", [True])
 @pytest.mark.skipif(
-    not accelerator,
+    accelerator.name == "cpu",
     reason=(
         "TODO: Add other accelerator implementation to "
         "VLLMPagedMemLayerwiseGPUConnector"
@@ -465,7 +465,7 @@ def test_batched_layerwise_vllm_paged_connector_with_gpu(use_gpu):
 @pytest.mark.skip(reason="This test is skipped due to vllm dependency")
 @pytest.mark.parametrize("use_gpu", [True])
 @pytest.mark.skipif(
-    not accelerator,
+    accelerator.name == "cpu",
     reason=(
         "TODO: Add other accelerator implementation to VLLMBufferLayerwiseGPUConnector"
     ),
@@ -567,7 +567,7 @@ def test_layerwise_vllm_buffer_connector_with_gpu(use_gpu):
 
 
 @pytest.mark.skipif(
-    not accelerator,
+    accelerator.name == "cpu",
     reason="TODO: Add other accelerator implementation to VLLMPagedMemGPUConnectorV2",
 )
 def test_vllm_paged_connector_v2_to_gpu_bench(benchmark):
@@ -631,7 +631,7 @@ def test_vllm_paged_connector_v2_to_gpu_bench(benchmark):
 @pytest.mark.parametrize("use_gpu", [True, False])
 @pytest.mark.parametrize("use_mla", [True, False])
 @pytest.mark.skipif(
-    not accelerator,
+    accelerator.name == "cpu",
     reason="TODO: Add other accelerator implementation to SGLangGPUConnector",
 )
 def test_sglang_connector_with_gpu_and_mla(use_gpu, use_mla):

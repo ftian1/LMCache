@@ -77,7 +77,7 @@ def get_tensor_size(tensor):
 @pytest.mark.parametrize("dst_device", [accelerator.current_device_name()])
 @pytest.mark.parametrize("backend", [accelerator.name, "cpu", "file://local_disk/"])
 @pytest.mark.skipif(
-    not accelerator,
+    accelerator.name == "cpu",
     reason="Requires Accelerator for test_lru",
 )
 def test_lru(backend, dst_device, autorelease):
@@ -131,7 +131,7 @@ def test_lru(backend, dst_device, autorelease):
 @pytest.mark.parametrize("dst_device", [accelerator.current_device_name])
 @pytest.mark.parametrize("backend", [accelerator.name, "cpu"])
 @pytest.mark.skipif(
-    not accelerator,
+    accelerator.name == "cpu",
     reason="Requires accelerator for test_lru_fragmentation",
 )
 def test_lru_fragmentation(backend, dst_device, autorelease):

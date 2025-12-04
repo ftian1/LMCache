@@ -85,7 +85,7 @@ def create_config():
 @pytest.mark.benchmark(group="store")
 @pytest.mark.parametrize("backend", ["cpu", "disk", "fsconnector"])
 @pytest.mark.skipif(
-    not accelerator,
+    accelerator.name == "cpu",
     reason="TODO: Add other accelerator implementation to VLLMPagedMemGPUConnectorV2",
 )
 def test_store_1GB(benchmark, backend, create_config, autorelease_v1):
@@ -187,7 +187,7 @@ def test_store_1GB(benchmark, backend, create_config, autorelease_v1):
 @pytest.mark.benchmark(group="retrieve")
 @pytest.mark.parametrize("backend", ["cpu", "disk", "fsconnector"])
 @pytest.mark.skipif(
-    not accelerator,
+    accelerator.name == "cpu",
     reason="TODO: Add other accelerator implementation to VLLMPagedMemGPUConnectorV2",
 )
 def test_retrieve_1GB_allhit(benchmark, backend, create_config, autorelease_v1):
@@ -298,7 +298,7 @@ def test_retrieve_1GB_allhit(benchmark, backend, create_config, autorelease_v1):
 @pytest.mark.benchmark(group="lookup")
 @pytest.mark.parametrize("backend", ["cpu", "disk", "fsconnector"])
 @pytest.mark.skipif(
-    not accelerator,
+    accelerator.name == "cpu",
     reason="TODO: Add other accelerator implementation to VLLMPagedMemGPUConnectorV2",
 )
 def test_lookup_20K_tokens(benchmark, backend, create_config, autorelease_v1):
