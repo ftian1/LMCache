@@ -15,7 +15,7 @@ from lmcache.accelerator import accelerator
 
 
 def determine_per_gpu_memory():
-    if not accelerator:
+    if accelerator.name == "cpu":
         raise RuntimeError("Accelerator device like CUDA and XPU is not available")
     total_memory = accelerator.get_device_properties(0).total_memory / (1024**3)
     return total_memory

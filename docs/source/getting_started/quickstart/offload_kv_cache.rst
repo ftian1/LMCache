@@ -224,7 +224,7 @@ Save the following script as ``cpu-offloading.py``:
         Raises:
             RuntimeError: If GPU memory is less than target_memory_gb
         """
-        if not accelerator:
+        if accelerator.name == "cpu":
             raise RuntimeError("No GPU available")
         
         total_memory = accelerator.get_device_properties(0).total_memory / (1024**3)  # Convert to GB

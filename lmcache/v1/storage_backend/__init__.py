@@ -35,7 +35,7 @@ def is_gpu_worker(metadata: LMCacheEngineMetadata) -> bool:
     Returns:
         True if the worker is not a scheduler and CUDA is available.
     """
-    return metadata.role != "scheduler" and accelerator
+    return metadata.role != "scheduler" and accelerator != "cpu"
 
 
 def create_dynamic_backends(

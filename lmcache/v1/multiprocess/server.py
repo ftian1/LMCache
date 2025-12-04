@@ -135,11 +135,11 @@ class GPUCacheContext:
         return self.kv_cache_pointers_
 
     @property
-    def stream(self) -> accelerator.Stream:
+    def stream(self) -> torch.Stream:
         """
         Returns the CUDA stream for KV cache operations
         """
-        return self.cuda_stream_
+        return self.stream_
 
     @property
     def cupy_stream(self) -> cupy.cuda.Stream:

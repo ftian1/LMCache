@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Standard
 from abc import ABC
-from typing import ClassVar, Type
+from typing import ClassVar, Type, Union
 import abc
 import warnings
 
@@ -18,6 +18,12 @@ class Accelerator(ABC):
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
         Accelerator._subclasses.append(cls)
+
+    def __eq__(self, other):
+        if isinstance(other, str):
+            return self.name == other.lower()
+        if isinstance(other, Accelerator):
+            return self.name == other.name
 
     @abc.abstractmethod
     def init(self): ...
@@ -62,6 +68,7 @@ class Accelerator(ABC):
     @abc.abstractmethod
     def default_stream(self, device_index=None): ...
 
+    @property
     @abc.abstractmethod
     def Event(self, enable_timing=False): ...
 
@@ -106,7 +113,7 @@ class XPU(Accelerator):
         return torch.xpu.synchronize(device_index)
 
     @property
-    def Stream(self):
+    def Stream(self) -> Type[torch.xpu.Stream]:
         return torch.xpu.Stream
 
     def stream(self, stream):
@@ -121,6 +128,7 @@ class XPU(Accelerator):
         # see https://pytorch.org/docs/stable/notes/cuda.html#cuda-streams
         return torch.xpu.current_stream(device_index)
 
+    @property
     def Event(self, enable_timing=False):
         return torch.xpu.Event(enable_timing)
 
@@ -165,7 +173,7 @@ class CUDA(Accelerator):
         return torch.cuda.synchronize(device_index)
 
     @property
-    def Stream(self):
+    def Stream(self) -> Type[torch.cuda.Stream]:
         return torch.cuda.Stream
 
     def stream(self, stream):
@@ -177,6 +185,7 @@ class CUDA(Accelerator):
     def default_stream(self, device_index=None):
         return torch.cuda.default_stream(device_index)
 
+    @property
     def Event(self, enable_timing=False):
         return torch.cuda.Event(enable_timing)
 
@@ -184,16 +193,80 @@ class CUDA(Accelerator):
         torch.cuda.empty_cache()
 
 
-accelerator = None
+class CPU:
+    def __init__(self):
+        self.name = self.device_name()
+
+    def __eq__(self, other):
+        if isinstance(other, str):
+            return self.name == other.lower()
+        if isinstance(other, Accelerator):
+            return self.name == other.name
+
+    def init(self):
+        pass
+
+    def device_name(self, device_index=None):
+        return "cpu"
+
+    def device(self, device_index=None):
+        return torch.device("cpu")
+
+    def set_device(self, device_index):
+        torch.cpu.set_device(device_index)
+
+    def current_device(self):
+        return torch.cpu.current_device()
+
+    def current_device_name(self):
+        return "cpu"
+
+    def device_count(self):
+        return torch.cpu.device_count()
+
+    def is_available(self):
+        return torch.cpu.is_available()
+
+    def synchronize(self, device_index=None):
+        return torch.cpu.synchronize(device_index)
+
+    @property
+    def Stream(self) -> Type[torch.cpu.Stream]:
+        return torch.cpu.Stream
+
+    def stream(self, stream):
+        return torch.cpu.stream(stream)
+
+    def current_stream(self, device_index=None):
+        return torch.cpu.current_stream(device_index)
+
+    def default_stream(self, device_index=None):
+        return torch.cpu.current_stream(device_index)
+
+    @property
+    def Event(self, enable_timing=False):
+        return torch.cpu.Event(enable_timing)
+
+    def empty_cache(self):
+        pass
+
+
+# Set the default one as CPU
+accelerator: Union[Accelerator, CPU] = CPU()
+
+# Check if the accelerator exists
 supported_devices = []
 for cls in Accelerator._subclasses:
     _instance = cls()
     supported_devices.append(_instance.name)
-    if not accelerator and _instance.is_available():
+    if _instance.is_available():
         accelerator = _instance
 
-if not accelerator:
+if accelerator == "cpu":
     warnings.warn(
-        f"!!!No supported devices [{', '.join(supported_devices)}] found!!!",
+        (
+            f"No supported accelerator [{', '.join(supported_devices)}] found. "
+            "Using CPU now!"
+        ),
         stacklevel=1,
     )

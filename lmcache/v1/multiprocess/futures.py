@@ -94,7 +94,7 @@ class GPUMessagingFuture(MessagingFuture[T]):
     ) -> None:
         super().__init__()
         self.raw_future_ = raw_future
-        self.event_: accelerator.Event | None = None
+        self.event_: torch.Event | None = None
         self.result_: T | None = None
         self.device_ = device if device is not None else accelerator.current_device()
 

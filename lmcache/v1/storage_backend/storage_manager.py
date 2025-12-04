@@ -63,7 +63,7 @@ def allocate_and_copy_objects(
     allocator_backend: AllocatorBackendInterface,
     keys: Sequence[CacheEngineKey],
     src_memory_objs: list[MemoryObj],
-    stream: accelerator.Stream,
+    stream: torch.Stream,
 ) -> tuple[Sequence[CacheEngineKey], list[MemoryObj]]:
     """
     Allocate the memory objects and copy the data from src_memory_objs to
@@ -201,7 +201,7 @@ class StorageManager:
 
         # For scheduler role, always use CPU device
         if is_gpu_worker(metadata):
-            dst_device = accelerator
+            dst_device = accelerator.name
         else:
             dst_device = "cpu"
         self.storage_backends: OrderedDict[str, StorageBackendInterface] = (
