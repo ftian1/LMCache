@@ -26,7 +26,9 @@ def generate_test_tokens(num_chunks: int, chunk_size: int) -> torch.Tensor:
     The sequence is [0, 1, 2, ..., num_chunks * chunk_size - 1]
     """
     # Create sequential tokens for testing
-    return torch.arange(0, num_chunks * chunk_size, dtype=torch.long, device=accelerator.name)
+    return torch.arange(
+        0, num_chunks * chunk_size, dtype=torch.long, device=accelerator.name
+    )
 
 
 def generate_kv_cache_paged_list_tensors(

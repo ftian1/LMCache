@@ -371,7 +371,8 @@ class NixlStorageBackend(AllocatorBackendInterface):
         Initialize the Nixl storage backend.
 
         :param dst_device: the device where the blocking retrieved KV is stored,
-            could be either "cpu", "xpu", "cuda", or "cuda:0", "cuda:1", "xpu:0", "xpu:1" etc.
+            could be either "cpu", "xpu", "cuda", or "cuda:0", "cuda:1", "xpu:0",
+            "xpu:1" etc.
         """
         super().__init__(dst_device=nixl_config.buffer_device)
 

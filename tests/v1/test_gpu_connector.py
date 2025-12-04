@@ -189,7 +189,10 @@ def test_vllm_paged_connector_v2_with_gpu_and_mla(use_gpu, use_mla):
 @pytest.mark.parametrize("use_gpu", [True])
 @pytest.mark.skipif(
     not accelerator,
-    reason="TODO: Add other accelerator implementation to VLLMPagedMemLayerwiseGPUConnector",
+    reason=(
+        "TODO: Add other accelerator implementation to "
+        "VLLMPagedMemLayerwiseGPUConnector"
+    ),
 )
 def test_layerwise_vllm_paged_connector_with_gpu(use_gpu):
     num_blocks = 100
@@ -293,7 +296,10 @@ def test_layerwise_vllm_paged_connector_with_gpu(use_gpu):
 @pytest.mark.parametrize("use_gpu", [True])
 @pytest.mark.skipif(
     not accelerator,
-    reason="TODO: Add other accelerator implementation to VLLMPagedMemLayerwiseGPUConnector",
+    reason=(
+        "TODO: Add other accelerator implementation to "
+        "VLLMPagedMemLayerwiseGPUConnector"
+    ),
 )
 def test_batched_layerwise_vllm_paged_connector_with_gpu(use_gpu):
     num_blocks = 100
@@ -460,7 +466,9 @@ def test_batched_layerwise_vllm_paged_connector_with_gpu(use_gpu):
 @pytest.mark.parametrize("use_gpu", [True])
 @pytest.mark.skipif(
     not accelerator,
-    reason="TODO: Add other accelerator implementation to VLLMBufferLayerwiseGPUConnector",
+    reason=(
+        "TODO: Add other accelerator implementation to VLLMBufferLayerwiseGPUConnector"
+    ),
 )
 def test_layerwise_vllm_buffer_connector_with_gpu(use_gpu):
     num_blocks = 100

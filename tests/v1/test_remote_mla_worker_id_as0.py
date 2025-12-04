@@ -3,7 +3,6 @@
 from typing import List
 
 # Add import for mock
-from unittest import mock
 import asyncio
 import threading
 

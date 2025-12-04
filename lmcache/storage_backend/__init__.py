@@ -1,6 +1,4 @@
 # SPDX-License-Identifier: Apache-2.0
-# Third Party
-import torch
 
 # First Party
 from lmcache.accelerator import accelerator

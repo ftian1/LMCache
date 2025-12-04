@@ -6,7 +6,6 @@ import time
 
 # Third Party
 import pytest
-import torch
 
 # First Party
 from lmcache.accelerator import accelerator
@@ -251,9 +250,7 @@ def test_gpu_messaging_future_with_thread():
     thread.start()
 
     # Initially should not be done
-    assert not gpu_future.query(), (
-        "Future should not be done before thread sets result"
-    )
+    assert not gpu_future.query(), "Future should not be done before thread sets result"
 
     # Wait for result
     result = gpu_future.result()
@@ -477,9 +474,7 @@ def test_gpu_messaging_future_query_before_and_after():
     gpu_future.wait()
 
     # Query after setting result
-    assert gpu_future.query(), (
-        "Query should return True after result is set and waited"
-    )
+    assert gpu_future.query(), "Query should return True after result is set and waited"
 
 
 @pytest.mark.skipif(

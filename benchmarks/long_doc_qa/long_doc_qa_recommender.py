@@ -9,10 +9,10 @@ import subprocess
 # Third Party
 from huggingface_hub import HfApi
 import psutil
-import torch
 
 # First Party
-from lmcache.accelerator import accelerator   
+from lmcache.accelerator import accelerator
+
 
 def determine_per_gpu_memory():
     if not accelerator:

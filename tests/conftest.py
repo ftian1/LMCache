@@ -13,7 +13,6 @@ import pytest
 import torch
 
 # First Party
-from lmcache.accelerator import accelerator
 from lmcache.config import LMCacheEngineMetadata
 from lmcache.v1.cache_engine import LMCacheEngineBuilder
 from lmcache.v1.memory_management import MixedMemoryAllocator

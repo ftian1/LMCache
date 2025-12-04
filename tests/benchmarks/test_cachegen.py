@@ -56,7 +56,9 @@ def to_blob(kv_tuples):
 @pytest.mark.parametrize("chunk_size", [64, 256, 768])
 @pytest.mark.skipif(
     not accelerator,
-    reason="TODO: Add other accelerator implementation to CacheGenSerializer/Deserializer",
+    reason=(
+        "TODO: Add other accelerator implementation to CacheGenSerializer/Deserializer",
+    ),
 )
 def test_cachegen_decoder_bench(benchmark, fmt, chunk_size):
     config = LMCacheEngineConfig.from_defaults(chunk_size=chunk_size)

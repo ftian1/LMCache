@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # Standard
-import abc
 from abc import ABC
+from typing import ClassVar, Type
+import abc
 import warnings
 
 # Third Party
@@ -9,7 +10,7 @@ import torch
 
 
 class Accelerator(ABC):
-    _subclasses = []
+    _subclasses: ClassVar[list[Type["Accelerator"]]] = []
 
     def __init__(self):
         self.name = self.device_name()
@@ -19,73 +20,54 @@ class Accelerator(ABC):
         Accelerator._subclasses.append(cls)
 
     @abc.abstractmethod
-    def init(self):
-        ...
+    def init(self): ...
 
     @abc.abstractmethod
-    def is_available(self):
-        ...
+    def is_available(self): ...
 
     @abc.abstractmethod
-    def device_name(self, device_index=None):
-        ...
+    def device_name(self, device_index=None): ...
 
     @abc.abstractmethod
-    def device(self, device_index=None):
-        ...
+    def device(self, device_index=None): ...
 
     @abc.abstractmethod
-    def set_device(self, device_index):
-        ...
+    def set_device(self, device_index): ...
 
     @abc.abstractmethod
-    def current_device(self):
-        ...
+    def current_device(self): ...
 
     @abc.abstractmethod
-    def current_device_name(self):
-        ...
+    def current_device_name(self): ...
 
     @abc.abstractmethod
-    def device_count(self):
-        ...
+    def device_count(self): ...
 
     @abc.abstractmethod
-    def get_device_properties(self, device_index):
-        ...
+    def get_device_properties(self, device_index): ...
 
     @abc.abstractmethod
-    def synchronize(self, device_index=None):
-        ...
+    def synchronize(self, device_index=None): ...
 
     @property
     @abc.abstractmethod
-    def Stream(self):
-        ...
+    def Stream(self): ...
 
     @abc.abstractmethod
-    def stream(self, stream):
-        ...
+    def stream(self, stream): ...
 
     @abc.abstractmethod
-    def current_stream(self, device_index=None):
-        ...
+    def current_stream(self, device_index=None): ...
 
     @abc.abstractmethod
-    def default_stream(self, device_index=None):
-        ...
+    def default_stream(self, device_index=None): ...
 
     @abc.abstractmethod
-    def get_device_properties(self, device_index=None):
-        ...
+    def Event(self, enable_timing=False): ...
 
     @abc.abstractmethod
-    def Event(self, enable_timing=False):
-        ...
+    def empty_cache(self): ...
 
-    @abc.abstractmethod
-    def empty_cache(self):
-        ...
 
 class XPU(Accelerator):
     def __init__(self):
@@ -95,12 +77,12 @@ class XPU(Accelerator):
         torch.xpu.init()
 
     def device_name(self, device_index=None):
-        if device_index == None:
-            return 'xpu'
-        return 'xpu:{}'.format(device_index)
+        if device_index is None:
+            return "xpu"
+        return "xpu:{}".format(device_index)
 
     def device(self, device_index=None):
-        return torch.device('xpu', device_index)
+        return torch.device("xpu", device_index)
 
     def set_device(self, device_index):
         torch.xpu.set_device(device_index)
@@ -109,7 +91,7 @@ class XPU(Accelerator):
         return torch.xpu.current_device()
 
     def current_device_name(self):
-        return 'xpu:{}'.format(torch.xpu.current_device())
+        return "xpu:{}".format(torch.xpu.current_device())
 
     def device_count(self):
         return torch.xpu.device_count()
@@ -139,14 +121,12 @@ class XPU(Accelerator):
         # see https://pytorch.org/docs/stable/notes/cuda.html#cuda-streams
         return torch.xpu.current_stream(device_index)
 
-    def get_device_properties(self, device_index=None):
-        return torch.xpu.get_device_properties(device_index)
-
     def Event(self, enable_timing=False):
-        return torch.xpu.Event(enable_timing) 
+        return torch.xpu.Event(enable_timing)
 
     def empty_cache(self):
         torch.xpu.empty_cache()
+
 
 class CUDA(Accelerator):
     def __init__(self):
@@ -156,12 +136,12 @@ class CUDA(Accelerator):
         torch.cuda.init()
 
     def device_name(self, device_index=None):
-        if device_index == None:
-            return 'cuda'
-        return 'cuda:{}'.format(device_index)
+        if device_index is None:
+            return "cuda"
+        return "cuda:{}".format(device_index)
 
     def device(self, device_index=None):
-        return torch.device('cuda', device_index)
+        return torch.device("cuda", device_index)
 
     def set_device(self, device_index):
         torch.cuda.set_device(device_index)
@@ -170,7 +150,7 @@ class CUDA(Accelerator):
         return torch.cuda.current_device()
 
     def current_device_name(self):
-        return 'cuda:{}'.format(torch.cuda.current_device())
+        return "cuda:{}".format(torch.cuda.current_device())
 
     def device_count(self):
         return torch.cuda.device_count()
@@ -197,14 +177,12 @@ class CUDA(Accelerator):
     def default_stream(self, device_index=None):
         return torch.cuda.default_stream(device_index)
 
-    def get_device_properties(self, device_index=None):
-        return torch.cuda.get_device_properties(device_index)
-
     def Event(self, enable_timing=False):
-        return torch.cuda.Event(enable_timing) 
+        return torch.cuda.Event(enable_timing)
 
     def empty_cache(self):
         torch.cuda.empty_cache()
+
 
 accelerator = None
 supported_devices = []
@@ -215,4 +193,7 @@ for cls in Accelerator._subclasses:
         accelerator = _instance
 
 if not accelerator:
-    warnings.warn(f"!!!No supported devices [{', '.join(supported_devices)}] found!!!")
+    warnings.warn(
+        f"!!!No supported devices [{', '.join(supported_devices)}] found!!!",
+        stacklevel=1,
+    )

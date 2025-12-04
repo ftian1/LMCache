@@ -150,7 +150,9 @@ class LMCacheConnector:
     ####################
 
     def load_kv(self, load_metadata: LoadMetadata) -> int:
-        token_ids = torch.tensor(load_metadata.token_ids, dtype=torch.int64).to(accelerator.current_device_name())
+        token_ids = torch.tensor(load_metadata.token_ids, dtype=torch.int64).to(
+            accelerator.current_device_name()
+        )
         slot_mapping = load_metadata.slot_mapping.to(accelerator.current_device_name())
         offset = load_metadata.offset
 
@@ -175,8 +177,12 @@ class LMCacheConnector:
         return num_retrieved_tokens
 
     def store_kv(self, store_metadata: StoreMetadata) -> None:
-        token_ids = torch.tensor(store_metadata.token_ids, dtype=torch.int64).to(accelerator.current_device_name())
-        slot_mapping = store_metadata.kv_indices.to(torch.int64).to(accelerator.current_device_name())
+        token_ids = torch.tensor(store_metadata.token_ids, dtype=torch.int64).to(
+            accelerator.current_device_name()
+        )
+        slot_mapping = store_metadata.kv_indices.to(torch.int64).to(
+            accelerator.current_device_name()
+        )
         offset = store_metadata.offset
 
         assert isinstance(token_ids, torch.Tensor)
@@ -255,7 +261,9 @@ class LMCacheLayerwiseConnector(LMCacheConnector):
         return
 
     def start_load_kv(self, load_metadata: LoadMetadata) -> int:
-        token_ids = torch.tensor(load_metadata.token_ids, dtype=torch.int64).to(accelerator.current_device_name())
+        token_ids = torch.tensor(load_metadata.token_ids, dtype=torch.int64).to(
+            accelerator.current_device_name()
+        )
         slot_mapping = load_metadata.slot_mapping.to(accelerator.current_device_name())
         offset = load_metadata.offset
 
@@ -272,7 +280,9 @@ class LMCacheLayerwiseConnector(LMCacheConnector):
         )
 
         retrieve_token_num = self.global_min_tokens(
-            retrieve_token_num, self.tp_group, torch.device(f"{accelerator.name}:{self.rank}")
+            retrieve_token_num,
+            self.tp_group,
+            torch.device(f"{accelerator.name}:{self.rank}"),
         )
 
         layerwise_retriever = self.lmcache_engine.retrieve_layer(
@@ -298,8 +308,12 @@ class LMCacheLayerwiseConnector(LMCacheConnector):
         return retrieve_token_num - offset
 
     def store_kv(self, store_metadata: StoreMetadata) -> None:
-        slot_mapping = store_metadata.kv_indices.to(torch.int64).to(accelerator.current_device_name())
-        token_ids = torch.tensor(store_metadata.token_ids, dtype=torch.int64).to(accelerator.current_device_name())
+        slot_mapping = store_metadata.kv_indices.to(torch.int64).to(
+            accelerator.current_device_name()
+        )
+        token_ids = torch.tensor(store_metadata.token_ids, dtype=torch.int64).to(
+            accelerator.current_device_name()
+        )
         store_mask = torch.ones_like(token_ids, dtype=torch.bool)
 
         lookup_id = str(uuid.uuid4())

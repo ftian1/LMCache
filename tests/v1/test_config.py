@@ -19,7 +19,7 @@ def test_get_extra_config_from_file():
     elif accelerator.name == "xpu":
         cfg_file = "data/test_config_xpu.yaml"
     else:
-        assert False, "No supported accelerator found!"
+        raise AssertionError("No supported accelerator found!")
     config = LMCacheEngineConfig.from_file(BASE_DIR / cfg_file)
     check_extra_config(config)
 

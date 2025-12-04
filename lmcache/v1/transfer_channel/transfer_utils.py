@@ -8,6 +8,7 @@ import msgspec
 # First Party
 from lmcache.accelerator import accelerator
 
+
 def get_correct_device(device: str, worker_id: int) -> str:
     """
     Get the correct device based on the given device string.

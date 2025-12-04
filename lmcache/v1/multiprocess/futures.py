@@ -160,9 +160,7 @@ class GPUMessagingFuture(MessagingFuture[T]):
         """
         flag = self.wait(timeout)
         if not flag:
-            raise TimeoutError(
-                "GPUMessagingFuture result not available within timeout"
-            )
+            raise TimeoutError("GPUMessagingFuture result not available within timeout")
 
         assert self.result_ is not None
         return self.result_

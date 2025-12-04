@@ -165,7 +165,9 @@ class VLLMPagedMemGPUConnectorV2(GPUConnectorInterface):
 
     def _initialize_pointers(self, kv_caches: List[torch.Tensor]) -> torch.Tensor:
         self.device = kv_caches[0].device
-        assert self.device.type == accelerator.name, "The device should be the supported accelerator."
+        assert self.device.type == accelerator.name, (
+            "The device should be the supported accelerator."
+        )
         idx = self.device.index
         if idx in self.kv_cache_pointers_on_gpu:
             return self.kv_cache_pointers_on_gpu[idx]
@@ -301,7 +303,7 @@ class VLLMPagedMemGPUConnectorV2(GPUConnectorInterface):
                 memory_obj.tensor.copy_(tmp_gpu_buffer, non_blocking=True)
 
         if memory_obj.tensor.is_cpu:
-            # Force a synchronize if the target buffer is NOT acelerator device
+            # Force a synchronize if the target buffer is NOT accelerator device
             # NOTE: for better performance, we may not want to sync for every
             # memory object
             self.store_stream.synchronize()
@@ -1098,7 +1100,9 @@ class SGLangGPUConnector(GPUConnectorInterface):
 
         self.kv_cache_pointers.numpy()[:] = [t.data_ptr() for t in kv_caches]
         device = kv_caches[0].device
-        assert device.type == accelerator.name, "The device should be the supported accelerator."
+        assert device.type == accelerator.name, (
+            "The device should be the supported accelerator."
+        )
         idx = device.index
         if idx not in self.kv_cache_pointers_on_gpu:
             self.kv_cache_pointers_on_gpu[idx] = torch.empty(

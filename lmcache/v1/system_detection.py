@@ -6,7 +6,6 @@ import platform
 
 # Third Party
 import psutil
-import torch
 
 try:
     # First Party

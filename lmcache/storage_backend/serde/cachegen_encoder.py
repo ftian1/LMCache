@@ -216,7 +216,9 @@ class CacheGenEncoderImpl:
             results = []
             for x in X:
                 """do permute here"""
-                batch_counts = process_batch(x.to(accelerator.current_device_name()).permute(1, 0), max_val)
+                batch_counts = process_batch(
+                    x.to(accelerator.current_device_name()).permute(1, 0), max_val
+                )
                 results.append(batch_counts)
 
             final_counts = torch.cat(results, dim=0)

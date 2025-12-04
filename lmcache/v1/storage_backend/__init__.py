@@ -5,9 +5,6 @@ from typing import TYPE_CHECKING, Optional
 import asyncio
 import importlib  # Added for dynamic import
 
-# Third Party
-import torch
-
 # First Party
 from lmcache.accelerator import accelerator
 from lmcache.config import LMCacheEngineMetadata

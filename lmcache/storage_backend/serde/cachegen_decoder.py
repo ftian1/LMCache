@@ -157,8 +157,12 @@ class CacheGenDeserializer(Deserializer):
     @_lmcache_nvtx_annotate
     def from_bytes(self, bs: bytes) -> torch.Tensor:
         encoder_output = CacheGenGPUEncoderOutput.from_bytes(bs)
-        encoder_output.max_tensors_key = encoder_output.max_tensors_key.to(accelerator.current_device_name())
-        encoder_output.max_tensors_value = encoder_output.max_tensors_value.to(accelerator.current_device_name())
+        encoder_output.max_tensors_key = encoder_output.max_tensors_key.to(
+            accelerator.current_device_name()
+        )
+        encoder_output.max_tensors_value = encoder_output.max_tensors_value.to(
+            accelerator.current_device_name()
+        )
 
         ntokens = encoder_output.max_tensors_key.shape[1]
         layers_in_key = encoder_output.max_tensors_key.shape[0]

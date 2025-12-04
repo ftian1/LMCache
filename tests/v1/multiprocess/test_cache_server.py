@@ -441,9 +441,7 @@ def test_retrieve_partial_miss(
         [stored_keys, registered_instance, retrieve_block_ids_2, event.ipc_handle()],
         get_response_class(RequestType.RETRIEVE),
     )
-    retrieve_result_2 = retrieve_future_2.to_future().result(
-        timeout=DEFAULT_TIMEOUT
-    )
+    retrieve_result_2 = retrieve_future_2.to_future().result(timeout=DEFAULT_TIMEOUT)
     assert len(retrieve_result_2) == num_stored
     assert all(retrieve_result_2), "All stored keys should be retrieved successfully"
 
@@ -600,9 +598,7 @@ def test_multiple_store_operations(
     assert all(lookup_result), "All stored keys from both batches should exist"
 
 
-@pytest.mark.skipif(
-    not accelerator, reason="Get chunk size requires accelerator"
-)
+@pytest.mark.skipif(not accelerator, reason="Get chunk size requires accelerator")
 def test_get_chunk_size(
     client: MessageQueueClient,
 ):
