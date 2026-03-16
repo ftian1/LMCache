@@ -11,6 +11,7 @@ from lmcache.integration.vllm.utils import ENGINE_NAME
 from lmcache.logging import init_logger
 from lmcache.utils import EngineType, _lmcache_nvtx_annotate
 from lmcache.v1.compute.blend.utils import LMCBlenderBuilder
+from lmcache.v1.gpu_connector.ops_interface import GPUKVFormat, TransferDirection
 from lmcache.v1.gpu_connector.utils import (
     assert_is_vllm_flash_attn_or_flash_infer,
     discover_gpu_kv_format,
@@ -26,7 +27,7 @@ from lmcache.v1.metadata import LMCacheMetadata
 
 if torch.cuda.is_available():
     # First Party
-    import lmcache.c_ops as lmc_ops
+    from lmcache.v1.gpu_connector.cuda_ops import CUDAKernelOps
 
 logger = init_logger(__name__)
 
@@ -182,6 +183,7 @@ class VLLMPagedMemGPUConnectorV2(GPUConnectorInterface):
 
         self.store_stream = torch.cuda.Stream()
         self.load_stream = torch.cuda.Stream()
+        self._ops = CUDAKernelOps()
 
     @classmethod
     def from_metadata(
@@ -289,13 +291,13 @@ class VLLMPagedMemGPUConnectorV2(GPUConnectorInterface):
         vllm_cached = kwargs.get("vllm_cached_tokens", 0)
         skip_prefix_n_tokens = min(end - start, max(0, vllm_cached - start))
 
-        lmc_ops.multi_layer_kv_transfer(
+        self._ops.multi_layer_kv_transfer(
             memory_obj.tensor,
             kv_cache_pointers,
             slot_mapping[start:end],
             self.device,
             self.page_buffer_size,
-            lmc_ops.TransferDirection.H2D,
+            TransferDirection.H2D,
             self.gpu_kv_format,
             self.block_size,
             skip_prefix_n_tokens,
@@ -336,13 +338,13 @@ class VLLMPagedMemGPUConnectorV2(GPUConnectorInterface):
 
         with torch.cuda.stream(self.store_stream):
             if self.gpu_buffer is None or end - start != self.gpu_buffer.shape[2]:
-                lmc_ops.multi_layer_kv_transfer(
+                self._ops.multi_layer_kv_transfer(
                     memory_obj.tensor,
                     kv_cache_pointers,
                     slot_mapping[start:end],
                     self.kvcaches[0].device,
                     self.page_buffer_size,
-                    lmc_ops.TransferDirection.D2H,
+                    TransferDirection.D2H,
                     self.gpu_kv_format,
                     self.block_size,
                 )
@@ -350,13 +352,13 @@ class VLLMPagedMemGPUConnectorV2(GPUConnectorInterface):
                 # kvcaches -> gpu_buffer -> memobj
                 assert self.gpu_buffer.device == self.kvcaches[0].device
                 tmp_gpu_buffer = self.gpu_buffer[:, :, : end - start, :]
-                lmc_ops.multi_layer_kv_transfer(
+                self._ops.multi_layer_kv_transfer(
                     tmp_gpu_buffer,
                     kv_cache_pointers,
                     slot_mapping[start:end],
                     self.kvcaches[0].device,
                     self.page_buffer_size,
-                    lmc_ops.TransferDirection.D2H,
+                    TransferDirection.D2H,
                     self.gpu_kv_format,
                     self.block_size,
                 )
@@ -410,6 +412,7 @@ class VLLMPagedMemGPUConnectorV3(GPUConnectorInterface):
 
         self.store_stream = torch.cuda.Stream()
         self.load_stream = torch.cuda.Stream()
+        self._ops = CUDAKernelOps()
 
     @classmethod
     def from_metadata(
@@ -485,13 +488,13 @@ class VLLMPagedMemGPUConnectorV3(GPUConnectorInterface):
         for i, kv_cache_pointer in enumerate(self.group_kv_cache_pointers_on_gpu):
             memory_obj_tensor = memory_obj.get_tensor(i)
             assert memory_obj_tensor is not None
-            lmc_ops.multi_layer_kv_transfer(
+            self._ops.multi_layer_kv_transfer(
                 memory_obj_tensor,
                 kv_cache_pointer,
                 slot_mapping[start:end],
                 self.device,
                 self.page_buffer_size,
-                lmc_ops.TransferDirection.H2D,
+                TransferDirection.H2D,
                 self.gpu_kv_format,
                 self.block_size,
                 skip_prefix_n_tokens,
@@ -515,13 +518,13 @@ class VLLMPagedMemGPUConnectorV3(GPUConnectorInterface):
                 ):
                     memory_obj_tensor = memory_obj.get_tensor(i)
                     assert memory_obj_tensor is not None
-                    lmc_ops.multi_layer_kv_transfer(
+                    self._ops.multi_layer_kv_transfer(
                         memory_obj_tensor,
                         kv_cache_pointer,
                         slot_mapping[start:end],
                         self.device,
                         self.page_buffer_size,
-                        lmc_ops.TransferDirection.D2H,
+                        TransferDirection.D2H,
                         self.gpu_kv_format,
                         self.block_size,
                     )
@@ -532,13 +535,13 @@ class VLLMPagedMemGPUConnectorV3(GPUConnectorInterface):
                     self.group_kv_cache_pointers_on_gpu
                 ):
                     tmp_gpu_buffer = self.group_tmp_buffer[i][:, :, : end - start, :]
-                    lmc_ops.multi_layer_kv_transfer(
+                    self._ops.multi_layer_kv_transfer(
                         tmp_gpu_buffer,
                         kv_cache_pointer,
                         slot_mapping[start:end],
                         self.device,
                         self.page_buffer_size,
-                        lmc_ops.TransferDirection.D2H,
+                        TransferDirection.D2H,
                         self.gpu_kv_format,
                         self.block_size,
                     )
@@ -597,6 +600,7 @@ class VLLMBufferLayerwiseGPUConnector(GPUConnectorInterface):
 
         self.load_stream = torch.cuda.Stream()
         self.store_stream = torch.cuda.Stream()
+        self._ops = CUDAKernelOps()
 
         self.buffer_mapping: dict[int, MemoryObj] = {}
 
@@ -768,11 +772,11 @@ class VLLMBufferLayerwiseGPUConnector(GPUConnectorInterface):
             )
         for layer_id in range(self.num_layers + 2):
             if layer_id > 1:
-                lmc_ops.single_layer_kv_transfer(
+                self._ops.single_layer_kv_transfer(
                     self.buffer_mapping[layer_id - 2].tensor,
                     self.kvcaches[layer_id - 2],
                     slot_mapping_full,
-                    lmc_ops.TransferDirection.H2D,
+                    TransferDirection.H2D,
                     self.gpu_kv_format,
                     token_major=False,  # shape is [2, num_tokens, hidden_dim]
                 )
@@ -928,11 +932,11 @@ class VLLMBufferLayerwiseGPUConnector(GPUConnectorInterface):
             # kvcaches -> gpu_buffer -> memobj
             with torch.cuda.stream(self.store_stream):
                 self.store_stream.wait_stream(current_stream)
-                lmc_ops.single_layer_kv_transfer(
+                self._ops.single_layer_kv_transfer(
                     tmp_gpu_buffer_obj.tensor,
                     self.kvcaches[layer_id],
                     slot_mapping_full,
-                    lmc_ops.TransferDirection.D2H,
+                    TransferDirection.D2H,
                     self.gpu_kv_format,
                     token_major=False,  # shape is [2, num_tokens, hidden_dim]
                 )
@@ -998,6 +1002,7 @@ class VLLMPagedMemLayerwiseGPUConnector(GPUConnectorInterface):
 
         self.load_stream = torch.cuda.Stream()
         self.store_stream = torch.cuda.Stream()
+        self._ops = CUDAKernelOps()
 
         self.use_mla = "use_mla" in kwargs and kwargs["use_mla"]
 
@@ -1163,21 +1168,21 @@ class VLLMPagedMemLayerwiseGPUConnector(GPUConnectorInterface):
                             memory_obj.tensor, non_blocking=True
                         )
                     else:
-                        lmc_ops.single_layer_kv_transfer(
+                        self._ops.single_layer_kv_transfer(
                             memory_obj.tensor,
                             self.kvcaches[layer_id],
                             slot_mapping_full,
-                            lmc_ops.TransferDirection.H2D,
+                            TransferDirection.H2D,
                             self.gpu_kv_format,
                             token_major=True,
                         )
 
                 if self.use_gpu:
-                    lmc_ops.single_layer_kv_transfer(
+                    self._ops.single_layer_kv_transfer(
                         tmp_gpu_buffer_obj.tensor,
                         self.kvcaches[layer_id],
                         slot_mapping_full,
-                        lmc_ops.TransferDirection.H2D,
+                        TransferDirection.H2D,
                         self.gpu_kv_format,
                         token_major=True,
                     )
@@ -1271,11 +1276,11 @@ class VLLMPagedMemLayerwiseGPUConnector(GPUConnectorInterface):
             with torch.cuda.stream(self.store_stream):
                 self.store_stream.wait_stream(current_stream)
                 if self.use_gpu:
-                    lmc_ops.single_layer_kv_transfer(
+                    self._ops.single_layer_kv_transfer(
                         tmp_gpu_buffer_obj.tensor,
                         self.kvcaches[layer_id],
                         slot_mapping_full,
-                        lmc_ops.TransferDirection.D2H,
+                        TransferDirection.D2H,
                         self.gpu_kv_format,
                         token_major=True,
                     )
@@ -1289,11 +1294,11 @@ class VLLMPagedMemLayerwiseGPUConnector(GPUConnectorInterface):
                             non_blocking=True,
                         )
                     else:
-                        lmc_ops.single_layer_kv_transfer(
+                        self._ops.single_layer_kv_transfer(
                             memory_obj.tensor,
                             self.kvcaches[layer_id],
                             slot_mapping[start:end],
-                            lmc_ops.TransferDirection.D2H,
+                            TransferDirection.D2H,
                             self.gpu_kv_format,
                             token_major=True,
                         )
@@ -1366,13 +1371,15 @@ class SGLangGPUConnector(GPUConnectorInterface):
             )
             logger.info(f"GPU buffer: {self.gpu_buffer.shape}")
 
+        self._ops = CUDAKernelOps()
+
     def _initialize_pointers(self, kv_caches: List[torch.Tensor]) -> torch.Tensor:
         # Discover format first to handle flattening correctly
         self.gpu_kv_format = discover_gpu_kv_format(kv_caches, EngineType.SGLANG)
 
         # For TWO_X_NL_X_NBBS_NH_HS format, kv_caches is [[k_list], [v_list]]
         # We need to flatten it to [k0, k1, ..., v0, v1, ...]
-        if self.gpu_kv_format == lmc_ops.GPUKVFormat.TWO_X_NL_X_NBBS_NH_HS:
+        if self.gpu_kv_format == GPUKVFormat.TWO_X_NL_X_NBBS_NH_HS:
             flat_kv_caches = kv_caches[0] + kv_caches[1]  # [k_list] + [v_list]
             device = flat_kv_caches[0].device
         else:
@@ -1443,13 +1450,13 @@ class SGLangGPUConnector(GPUConnectorInterface):
         slot_mapping: torch.Tensor = kwargs["slot_mapping"]
 
         kv_cache_pointers = self._initialize_pointers(kvcaches)
-        lmc_ops.multi_layer_kv_transfer_unilateral(
+        self._ops.multi_layer_kv_transfer_unilateral(
             memory_obj.tensor,
             kv_cache_pointers,
             slot_mapping[start - offset : end - offset],
             kvcaches[0][0].device,
             self.page_buffer_size,
-            lmc_ops.TransferDirection.H2D,
+            TransferDirection.H2D,
             self.gpu_kv_format,
         )
 
@@ -1486,26 +1493,26 @@ class SGLangGPUConnector(GPUConnectorInterface):
         kv_cache_pointers = self._initialize_pointers(kvcaches)
 
         if self.gpu_buffer is None or end - start != self.gpu_buffer.shape[2]:
-            lmc_ops.multi_layer_kv_transfer_unilateral(
+            self._ops.multi_layer_kv_transfer_unilateral(
                 memory_obj.tensor,
                 kv_cache_pointers,
                 slot_mapping[start:end],
                 kvcaches[0][0].device,
                 self.page_buffer_size,
-                lmc_ops.TransferDirection.D2H,
+                TransferDirection.D2H,
                 self.gpu_kv_format,
             )
         else:
             # kvcaches -> gpu_buffer -> memobj
             assert self.gpu_buffer.device == kvcaches[0][0].device
             tmp_gpu_buffer = self.gpu_buffer[:, :, : end - start, :]
-            lmc_ops.multi_layer_kv_transfer_unilateral(
+            self._ops.multi_layer_kv_transfer_unilateral(
                 tmp_gpu_buffer,
                 kv_cache_pointers,
                 slot_mapping[start:end],
                 kvcaches[0][0].device,
                 self.page_buffer_size,
-                lmc_ops.TransferDirection.D2H,
+                TransferDirection.D2H,
                 self.gpu_kv_format,
             )
             memory_obj.tensor.copy_(tmp_gpu_buffer, non_blocking=True)
@@ -1573,6 +1580,7 @@ class SGLangLayerwiseGPUConnector(GPUConnectorInterface):
         )
         self.use_gpu = use_gpu
         self.gpu_buffer_allocator: Optional[GPUMemoryAllocator] = None
+        self._ops = CUDAKernelOps()
 
     def _lazy_initialize_buffer(self, kv_caches):
         """
@@ -1679,24 +1687,24 @@ class SGLangLayerwiseGPUConnector(GPUConnectorInterface):
                         memory_obj.tensor, non_blocking=True
                     )
                 else:
-                    lmc_ops.single_layer_kv_transfer_sgl(
+                    self._ops.single_layer_kv_transfer_sgl(
                         memory_obj.tensor,
                         self.kvcaches[0][layer_id],
                         self.kvcaches[1][layer_id],
                         slot_mapping[start:end],
-                        lmc_ops.TransferDirection.H2D,
+                        TransferDirection.H2D,
                         token_major=True,
                     )
 
             if self.use_gpu:
                 t, h, d = self.kvcaches[0][layer_id].shape
 
-                lmc_ops.single_layer_kv_transfer_sgl(
+                self._ops.single_layer_kv_transfer_sgl(
                     tmp_gpu_buffer_obj.tensor,
                     self.kvcaches[0][layer_id].view(t, 1, h, d),
                     self.kvcaches[1][layer_id].view(t, 1, h, d),
                     slot_mapping_full,
-                    lmc_ops.TransferDirection.H2D,
+                    TransferDirection.H2D,
                     token_major=True,
                 )
 
@@ -1781,12 +1789,12 @@ class SGLangLayerwiseGPUConnector(GPUConnectorInterface):
             # kvcaches -> gpu_buffer -> memobj
             if self.use_gpu:
                 t, h, d = self.kvcaches[0][layer_id].shape
-                lmc_ops.single_layer_kv_transfer_sgl(
+                self._ops.single_layer_kv_transfer_sgl(
                     tmp_gpu_buffer_obj.tensor,
                     self.kvcaches[0][layer_id].view(t, 1, h, d),
                     self.kvcaches[1][layer_id].view(t, 1, h, d),
                     slot_mapping_full,
-                    lmc_ops.TransferDirection.D2H,
+                    TransferDirection.D2H,
                     token_major=True,
                 )
 
@@ -1804,12 +1812,12 @@ class SGLangLayerwiseGPUConnector(GPUConnectorInterface):
                     )
                     start_idx += chunk_len
                 else:
-                    lmc_ops.single_layer_kv_transfer_sgl(
+                    self._ops.single_layer_kv_transfer_sgl(
                         memory_obj.tensor,
                         self.kvcaches[0][layer_id],
                         self.kvcaches[1][layer_id],
                         slot_mapping[start:end],
-                        lmc_ops.TransferDirection.D2H,
+                        TransferDirection.D2H,
                         token_major=True,
                     )
 
