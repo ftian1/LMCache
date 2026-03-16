@@ -3,12 +3,15 @@
 import torch
 
 # First Party
+from lmcache.v1.gpu_connector.ops_interface import TransferDirection
 from lmcache.v1.lazy_memory_allocator import LazyMemoryAllocator
 from lmcache.v1.memory_management import MemoryObj
 
 if torch.cuda.is_available():
     # First Party
-    import lmcache.c_ops as lmc_ops
+    from lmcache.v1.gpu_connector.cuda_ops import CUDAKernelOps
+
+    _cuda_ops = CUDAKernelOps()
 
 
 # Helper functions
@@ -27,11 +30,11 @@ def lmcache_memcpy_async_h2d(
     assert memory_obj.tensor is not None
     assert memory_obj.tensor.numel() == gpu_buffer.numel()
     if isinstance(memory_obj.parent(), LazyMemoryAllocator):
-        lmc_ops.lmcache_memcpy_async(
+        _cuda_ops.lmcache_memcpy_async(
             gpu_buffer.data_ptr(),
             memory_obj.tensor.data_ptr(),
             memory_obj.get_size(),
-            lmc_ops.TransferDirection.H2D,
+            TransferDirection.H2D,
             memory_obj.meta.address,
             LazyMemoryAllocator.PIN_CHUNK_SIZE,
         )
@@ -54,11 +57,11 @@ def lmcache_memcpy_async_d2h(
     assert memory_obj.tensor is not None
     assert memory_obj.tensor.numel() == gpu_buffer.numel()
     if isinstance(memory_obj.parent(), LazyMemoryAllocator):
-        lmc_ops.lmcache_memcpy_async(
+        _cuda_ops.lmcache_memcpy_async(
             memory_obj.tensor.data_ptr(),
             gpu_buffer.data_ptr(),
             memory_obj.get_size(),
-            lmc_ops.TransferDirection.D2H,
+            TransferDirection.D2H,
             memory_obj.meta.address,
             LazyMemoryAllocator.PIN_CHUNK_SIZE,
         )

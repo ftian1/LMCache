@@ -74,7 +74,10 @@ from lmcache.v1.multiprocess.token_hasher import TokenHasher
 
 if torch.cuda.is_available():
     # First Party
-    import lmcache.c_ops as lmc_ops
+    from lmcache.v1.gpu_connector.cuda_ops import CUDAKernelOps
+    from lmcache.v1.gpu_connector.ops_interface import TransferDirection
+
+    _cuda_ops = CUDAKernelOps()
 
 logger = init_logger(__name__)
 
@@ -301,13 +304,13 @@ class MPCacheEngine:
                 # Copy from GPU to CPU
                 tmp_buffer = gpu_context.get_tmp_gpu_buffer(self.chunk_size)
                 with self.lock:
-                    lmc_ops.multi_layer_kv_transfer(
+                    _cuda_ops.multi_layer_kv_transfer(
                         tmp_buffer,
                         gpu_context.kv_pointers,
                         slot_mapping,
                         gpu_context.device,
                         gpu_context.block_size * gpu_context.num_blocks,
-                        lmc_ops.TransferDirection.D2H,
+                        TransferDirection.D2H,
                         gpu_context.gpu_kv_format_,
                         gpu_context.block_size,
                     )
@@ -421,13 +424,13 @@ class MPCacheEngine:
                 tmp_gpu_buffer_ = gpu_context.get_tmp_gpu_buffer(self.chunk_size)
                 with self.lock:
                     lmcache_memcpy_async_h2d(memory_obj, tmp_gpu_buffer_)
-                    lmc_ops.multi_layer_kv_transfer(
+                    _cuda_ops.multi_layer_kv_transfer(
                         tmp_gpu_buffer_,
                         gpu_context.kv_pointers,
                         slot_mapping,
                         gpu_context.device,
                         gpu_context.block_size * gpu_context.num_blocks,
-                        lmc_ops.TransferDirection.H2D,
+                        TransferDirection.H2D,
                         gpu_context.gpu_kv_format_,
                         gpu_context.block_size,
                         skip_in_chunk,
