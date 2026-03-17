@@ -15,8 +15,9 @@ HIPIFY_OUT_DIR = os.path.join(ROOT_DIR, "csrc_hip/")
 # will run python setup.py sdist --dist-dir dist
 BUILDING_SDIST = "sdist" in sys.argv or os.environ.get("NO_CUDA_EXT", "0") == "1"
 
-# New environment variable to choose between CUDA and HIP
+# New environment variable to choose between CUDA, HIP, and SYCL
 BUILD_WITH_HIP = os.environ.get("BUILD_WITH_HIP", "0") == "1"
+BUILD_WITH_SYCL = os.environ.get("BUILD_WITH_SYCL", "0") == "1"
 
 ENABLE_CXX11_ABI = os.environ.get("ENABLE_CXX11_ABI", "1") == "1"
 
@@ -199,14 +200,86 @@ def rocm_extension() -> tuple[list, dict]:
     return ext_modules, cmdclass
 
 
+def sycl_extension() -> tuple[list, dict]:
+    # Third Party
+    from torch.utils import cpp_extension  # Import here
+
+    print("Building SYCL/XPU extensions")
+    global ENABLE_CXX11_ABI
+    if ENABLE_CXX11_ABI:
+        flag_cxx_abi = "-D_GLIBCXX_USE_CXX11_ABI=1"
+    else:
+        flag_cxx_abi = "-D_GLIBCXX_USE_CXX11_ABI=0"
+
+    sycl_sources = [
+        "csrc/sycl/pybind_sycl.cpp",
+        "csrc/sycl/mem_kernels_sycl.cpp",
+    ]
+    storage_manager_sources = [
+        "csrc/storage_manager/bitmap.cpp",
+        "csrc/storage_manager/pybind.cpp",
+        "csrc/storage_manager/ttl_lock.cpp",
+        "csrc/storage_manager/utils.cpp",
+    ]
+    redis_sources = [
+        "csrc/storage_backends/redis/pybind.cpp",
+        "csrc/storage_backends/redis/connector.cpp",
+    ]
+    # Use CppExtension with DPC++ compiler (set CXX=icpx before invoking).
+    # The -fsycl flag enables SYCL compilation and linking.
+    # Intel XPU optimizations:
+    #   -ftarget-register-alloc-mode=pvc:auto
+    #       Register allocation tuned for Ponte Vecchio / Data Center GPU Max.
+    #   -fno-sycl-id-queries-fit-in-int
+    #       Allow 64-bit index arithmetic in SYCL kernels.
+    ext_modules = [
+        cpp_extension.CppExtension(
+            "lmcache.xpu_ops",
+            sources=sycl_sources,
+            include_dirs=["csrc/sycl"],
+            extra_compile_args={
+                "cxx": [
+                    flag_cxx_abi,
+                    "-std=c++17",
+                    "-O3",
+                    "-fsycl",
+                    "-ftarget-register-alloc-mode=pvc:auto",
+                    "-fno-sycl-id-queries-fit-in-int",
+                ],
+            },
+            extra_link_args=["-fsycl"],
+        ),
+        cpp_extension.CppExtension(
+            "lmcache.native_storage_ops",
+            sources=storage_manager_sources,
+            include_dirs=["csrc/storage_manager"],
+            extra_compile_args={
+                "cxx": [flag_cxx_abi, "-O3", "-std=c++17"],
+            },
+        ),
+        cpp_extension.CppExtension(
+            "lmcache.lmcache_redis",
+            sources=redis_sources,
+            include_dirs=["csrc/storage_backends", "csrc/storage_backends/redis"],
+            extra_compile_args={
+                "cxx": [flag_cxx_abi, "-O3", "-std=c++17"],
+            },
+        ),
+    ]
+    cmdclass = {"build_ext": cpp_extension.BuildExtension}
+    return ext_modules, cmdclass
+
+
 def source_dist_extension() -> tuple[list, dict]:
-    print("Not building CUDA/HIP extensions for sdist")
+    print("Not building CUDA/HIP/SYCL extensions for sdist")
     return [], {}
 
 
 if __name__ == "__main__":
     if BUILDING_SDIST:
         get_extension = source_dist_extension
+    elif BUILD_WITH_SYCL:
+        get_extension = sycl_extension
     elif BUILD_WITH_HIP:
         get_extension = rocm_extension
     else:
