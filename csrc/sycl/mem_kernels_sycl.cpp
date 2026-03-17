@@ -325,15 +325,13 @@ void multi_layer_kv_transfer(
   int num_origin_elements = key_value.size(3);
   int copy_size = num_origin_elements * key_value.element_size();
 
-#ifndef LAUNCH_MULTI_LAYER_KV_TRANSFER
-  #define LAUNCH_MULTI_LAYER_KV_TRANSFER(type)                          \
-    do {                                                                \
-      multi_layer_kv_transfer_templated<type>(                          \
-          key_value, key_value_ptrs, slot_mapping, paged_memory_device, \
-          page_buffer_size, direction, gpu_kv_format, block_size,       \
-          skip_prefix_n_tokens);                                        \
-    } while (0)
-#endif
+#define LAUNCH_MULTI_LAYER_KV_TRANSFER(type)                          \
+  do {                                                                \
+    multi_layer_kv_transfer_templated<type>(                          \
+        key_value, key_value_ptrs, slot_mapping, paged_memory_device, \
+        page_buffer_size, direction, gpu_kv_format, block_size,       \
+        skip_prefix_n_tokens);                                        \
+  } while (0)
   if (copy_size % 8 == 0) {
     LAUNCH_MULTI_LAYER_KV_TRANSFER(int64_t);
   } else if (copy_size % 4 == 0) {

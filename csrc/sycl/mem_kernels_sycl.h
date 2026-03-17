@@ -100,6 +100,10 @@ void single_layer_kv_transfer_sgl(torch::Tensor& lmc_key_value_cache,
                                   const TransferDirection direction,
                                   const bool token_major = false);
 
+// Asynchronous memory copy between host and device buffers.
+// Note: the direction parameter is retained for API compatibility with the
+// CUDA version but is not used by the SYCL implementation (SYCL USM memcpy
+// infers direction from pointer allocation types).
 void lmcache_memcpy_async(uintptr_t dest, uintptr_t src, size_t nbytes,
                           TransferDirection direction,
                           size_t host_buffer_offset,

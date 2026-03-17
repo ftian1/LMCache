@@ -31,7 +31,11 @@ PYBIND11_MODULE(xpu_ops, m) {
         py::arg("skip_prefix_n_tokens") = 0,
         py::call_guard<py::gil_scoped_release>());
   m.def("multi_layer_kv_transfer_unilateral",
-        &multi_layer_kv_transfer_unilateral);
+        &multi_layer_kv_transfer_unilateral, py::arg("key_value"),
+        py::arg("key_value_ptrs"), py::arg("slot_mapping"),
+        py::arg("paged_memory_device"), py::arg("page_buffer_size"),
+        py::arg("direction"), py::arg("gpu_kv_format"),
+        py::call_guard<py::gil_scoped_release>());
   m.def("single_layer_kv_transfer", &single_layer_kv_transfer,
         py::arg("lmc_key_value_cache"), py::arg("vllm_key_value_cache"),
         py::arg("slot_mapping"), py::arg("direction"), py::arg("gpu_kv_format"),
