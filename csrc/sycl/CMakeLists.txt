@@ -80,11 +80,15 @@ target_link_options(xpu_ops PRIVATE ${SYCL_FLAGS})
 #       (safe for current implementation: we only move data, no FP
 #       arithmetic.  Review if FP math is added to these files).
 #   -funroll-loops — unroll inner copy loops for better instruction packing.
+#   -Wno-deprecated-declarations — suppress deprecation warnings from
+#       SYCL standard headers (sycl/accessor.hpp references the deprecated
+#       'host_buffer' internally; our code uses USM only).
 target_compile_options(xpu_ops PRIVATE
   -ftarget-register-alloc-mode=pvc:auto
   -fno-sycl-id-queries-fit-in-int
   -ffast-math
   -funroll-loops
+  -Wno-deprecated-declarations
 )
 
 # --- Installation --------------------------------------------------------

@@ -37,7 +37,14 @@
 //    number of index calculations and doubling the data moved per
 //    thread iteration.
 
+// The SYCL standard headers (sycl/accessor.hpp) reference the deprecated
+// 'host_buffer' internally even when user code only uses USM pointers.
+// Suppress the resulting -Wdeprecated-declarations noise from these headers.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #include <sycl/sycl.hpp>
+#pragma GCC diagnostic pop
+
 #include <torch/all.h>
 #include <ATen/ATen.h>
 #include <c10/xpu/XPUGuard.h>

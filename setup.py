@@ -252,6 +252,10 @@ def sycl_extension() -> tuple[list, dict]:
                     "-fno-sycl-id-queries-fit-in-int",
                     "-ffast-math",
                     "-funroll-loops",
+                    # Suppress deprecation warnings from SYCL standard
+                    # headers (sycl/accessor.hpp references the deprecated
+                    # 'host_buffer' internally; our code uses USM only).
+                    "-Wno-deprecated-declarations",
                 ],
             },
             extra_link_args=["-fsycl"],
