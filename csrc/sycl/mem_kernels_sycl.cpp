@@ -40,6 +40,7 @@
 // The SYCL standard headers (sycl/accessor.hpp) reference the deprecated
 // 'host_buffer' internally even when user code only uses USM pointers.
 // Suppress the resulting -Wdeprecated-declarations noise from these headers.
+// Note: icpx (Intel DPC++) is Clang-based so GCC diagnostic pragmas work.
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #include <sycl/sycl.hpp>
