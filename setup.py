@@ -232,6 +232,10 @@ def sycl_extension() -> tuple[list, dict]:
     #       Register allocation tuned for Ponte Vecchio / Data Center GPU Max.
     #   -fno-sycl-id-queries-fit-in-int
     #       Allow 64-bit index arithmetic in SYCL kernels.
+    #   -ffast-math
+    #       Aggressive FP opts (safe: kernels only copy data, no FP math).
+    #   -funroll-loops
+    #       Unroll inner copy loops for better instruction packing.
     ext_modules = [
         cpp_extension.CppExtension(
             "lmcache.xpu_ops",
@@ -245,6 +249,8 @@ def sycl_extension() -> tuple[list, dict]:
                     "-fsycl",
                     "-ftarget-register-alloc-mode=pvc:auto",
                     "-fno-sycl-id-queries-fit-in-int",
+                    "-ffast-math",
+                    "-funroll-loops",
                 ],
             },
             extra_link_args=["-fsycl"],

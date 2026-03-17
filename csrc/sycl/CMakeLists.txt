@@ -76,9 +76,14 @@ target_link_options(xpu_ops PRIVATE ${SYCL_FLAGS})
 #   -ftarget-register-alloc-mode=pvc:auto  — register allocation tuned for
 #       Ponte Vecchio / Data Center GPU Max series.
 #   -fno-sycl-id-queries-fit-in-int — allow 64-bit index arithmetic.
+#   -ffast-math — allow aggressive FP optimisations inside copy kernels
+#       (safe here: we only move data, no FP arithmetic).
+#   -funroll-loops — unroll inner copy loops for better instruction packing.
 target_compile_options(xpu_ops PRIVATE
   -ftarget-register-alloc-mode=pvc:auto
   -fno-sycl-id-queries-fit-in-int
+  -ffast-math
+  -funroll-loops
 )
 
 # --- Installation --------------------------------------------------------
