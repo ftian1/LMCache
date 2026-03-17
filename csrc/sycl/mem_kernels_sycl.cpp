@@ -48,15 +48,92 @@
 
 #include <torch/all.h>
 #include <ATen/ATen.h>
-#include <c10/xpu/XPUGuard.h>
-#include <c10/xpu/XPUStream.h>
+
+// Prefer c10::xpu when the PyTorch build ships XPU headers (Intel oneAPI
+// builds).  Fall back to device-agnostic c10 primitives + native SYCL
+// queue management otherwise.
+#if __has_include(<c10/xpu/XPUGuard.h>) && \
+    __has_include(<c10/xpu/XPUStream.h>)
+  #include <c10/xpu/XPUGuard.h>
+  #include <c10/xpu/XPUStream.h>
+  #define LMCACHE_HAS_C10_XPU 1
+#else
+  #include <c10/core/DeviceGuard.h>
+  #define LMCACHE_HAS_C10_XPU 0
+#endif
 
 #include "mem_kernels_sycl.h"
 
 #include <algorithm>
 #include <cstdint>
+#include <mutex>
 #include <stdexcept>
 #include <string>
+#include <vector>
+
+// ---------------------------------------------------------------------------
+// Portable XPU helpers
+// ---------------------------------------------------------------------------
+// When c10::xpu is available we delegate to PyTorch's stream/device
+// management.  Otherwise we maintain a simple per-device in-order
+// SYCL queue pool so the kernels can still run.
+// ---------------------------------------------------------------------------
+
+#if !LMCACHE_HAS_C10_XPU
+namespace {
+
+/// Return (or lazily create) an in-order SYCL queue for \p device_index.
+/// When \p device_index is negative the first GPU device is used.
+sycl::queue& fallback_sycl_queue(int device_index = -1) {
+  static std::mutex mu;
+  static std::vector<sycl::queue> queues;
+
+  std::lock_guard<std::mutex> lock(mu);
+  if (queues.empty()) {
+    auto gpus = sycl::device::get_devices(sycl::info::device_type::gpu);
+    for (auto& dev : gpus) {
+      queues.emplace_back(dev, sycl::property::queue::in_order{});
+    }
+    // Ultimate fallback -- use the default selector.
+    if (queues.empty()) {
+      queues.emplace_back(sycl::default_selector_v,
+                          sycl::property::queue::in_order{});
+    }
+  }
+  int idx = (device_index >= 0 &&
+             device_index < static_cast<int>(queues.size()))
+                ? device_index
+                : 0;
+  return queues[idx];
+}
+
+}  // namespace
+#endif  // !LMCACHE_HAS_C10_XPU
+
+/// Get the SYCL queue for the given device index.
+inline sycl::queue& lmc_get_sycl_queue(c10::DeviceIndex device_index) {
+#if LMCACHE_HAS_C10_XPU
+  return c10::xpu::getCurrentXPUStream(device_index).queue();
+#else
+  return fallback_sycl_queue(static_cast<int>(device_index));
+#endif
+}
+
+/// Get the SYCL queue for the current default device.
+inline sycl::queue& lmc_get_sycl_queue() {
+#if LMCACHE_HAS_C10_XPU
+  return c10::xpu::getCurrentXPUStream().queue();
+#else
+  return fallback_sycl_queue();
+#endif
+}
+
+/// RAII device guard compatible with both c10::xpu and the fallback path.
+#if LMCACHE_HAS_C10_XPU
+using lmc_optional_device_guard = c10::xpu::OptionalXPUGuard;
+#else
+using lmc_optional_device_guard = c10::OptionalDeviceGuard;
+#endif
 
 // ---------------------------------------------------------------------------
 // Tuning constants
@@ -327,9 +404,9 @@ void multi_layer_kv_transfer_templated(
   // Round up to a sub-group multiple so every sub-group is full.
   int wg_size = round_up_to_sg(std::min(num_xwords, MAX_WG_SIZE));
 
-  const c10::xpu::OptionalXPUGuard device_guard(paged_memory_device);
+  const lmc_optional_device_guard device_guard(paged_memory_device);
   sycl::queue& queue =
-      c10::xpu::getCurrentXPUStream(paged_memory_device.index()).queue();
+      lmc_get_sycl_queue(paged_memory_device.index());
 
   if (direction == TransferDirection::H2D) {
     switch (gpu_kv_format) {
@@ -439,9 +516,9 @@ void multi_layer_kv_transfer_unilateral(
   int kv_num_tokens = key_value.size(2);
   int wg_size = round_up_to_sg(std::min(num_qwords, MAX_WG_SIZE));
 
-  const c10::xpu::OptionalXPUGuard device_guard(paged_memory_device);
+  const lmc_optional_device_guard device_guard(paged_memory_device);
   sycl::queue& queue =
-      c10::xpu::getCurrentXPUStream(paged_memory_device.index()).queue();
+      lmc_get_sycl_queue(paged_memory_device.index());
 
   if (direction == TransferDirection::H2D) {
     submit_multi_layer_unilateral_kernel<int64_t, false>(
@@ -583,11 +660,10 @@ void single_layer_kv_transfer(torch::Tensor& lmc_key_value_cache,
   int wg_size = round_up_to_sg(std::min(n, MAX_WG_SIZE));
   if (num_tokens <= 0) return;
 
-  const c10::xpu::OptionalXPUGuard device_guard(
+  const lmc_optional_device_guard device_guard(
       device_of(vllm_key_value_cache));
   sycl::queue& queue =
-      c10::xpu::getCurrentXPUStream(vllm_key_value_cache.device().index())
-          .queue();
+      lmc_get_sycl_queue(vllm_key_value_cache.device().index());
 
   auto lmc_ptr = lmc_key_value_cache_ptr;
   auto vllm_ptr = vllm_key_value_cache_ptr;
@@ -712,9 +788,9 @@ void single_layer_kv_transfer_sgl(torch::Tensor& lmc_key_value_cache,
   int wg_size = round_up_to_sg(std::min(n, MAX_WG_SIZE));
   if (num_tokens <= 0) return;
 
-  const c10::xpu::OptionalXPUGuard device_guard(device_of(sgl_key_cache));
+  const lmc_optional_device_guard device_guard(device_of(sgl_key_cache));
   sycl::queue& queue =
-      c10::xpu::getCurrentXPUStream(sgl_key_cache.device().index()).queue();
+      lmc_get_sycl_queue(sgl_key_cache.device().index());
 
   if (direction == TransferDirection::D2H)
     single_layer_kv_transfer_sgl_impl<true>(
@@ -763,9 +839,9 @@ void load_and_reshape_flash(torch::Tensor& key_value, torch::Tensor& key_cache,
   sycl::range<1> global_range(static_cast<size_t>(num_tokens) * wg_size);
   sycl::range<1> local_range(static_cast<size_t>(wg_size));
 
-  const c10::xpu::OptionalXPUGuard device_guard(device_of(key_cache));
+  const lmc_optional_device_guard device_guard(device_of(key_cache));
   sycl::queue& queue =
-      c10::xpu::getCurrentXPUStream(key_cache.device().index()).queue();
+      lmc_get_sycl_queue(key_cache.device().index());
 
   auto kv_ptr = key_value_ptr;
   auto k_ptr = key_cache_ptr;
@@ -840,9 +916,9 @@ void reshape_and_cache_back_flash(torch::Tensor& key_value,
   sycl::range<1> global_range(static_cast<size_t>(num_tokens) * wg_size);
   sycl::range<1> local_range(static_cast<size_t>(wg_size));
 
-  const c10::xpu::OptionalXPUGuard device_guard(device_of(key_cache));
+  const lmc_optional_device_guard device_guard(device_of(key_cache));
   sycl::queue& queue =
-      c10::xpu::getCurrentXPUStream(key_cache.device().index()).queue();
+      lmc_get_sycl_queue(key_cache.device().index());
 
   auto kv_ptr = key_value_ptr;
   auto k_ptr = key_cache_ptr;
@@ -896,7 +972,7 @@ void lmcache_memcpy_async(uintptr_t dest, uintptr_t src, size_t nbytes,
   // version but is not needed by the SYCL runtime.
   (void)direction;
 
-  sycl::queue& queue = c10::xpu::getCurrentXPUStream().queue();
+  sycl::queue& queue = lmc_get_sycl_queue();
 
   size_t offset = 0;
   const size_t mask = host_buffer_alignments - 1;
