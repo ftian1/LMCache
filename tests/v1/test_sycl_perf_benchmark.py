@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Performance benchmark: pre-optimisation (PyTorch reference) vs
-post-optimisation (SYCL C++ kernels via ``lmcache.xpu_ops``).
+Performance benchmark: pre-optimization (PyTorch reference) vs
+post-optimization (SYCL C++ kernels via ``lmcache.xpu_ops``).
 
 The test file exercises the same three hot-path functions that the
 SYCL kernels implement and compares:
@@ -9,13 +9,13 @@ SYCL kernels implement and compares:
   * **PyTorch reference** — a pure-PyTorch implementation that
     performs the exact same data movement using ``index_select``,
     ``index_copy_``, and tensor slicing.  This represents the
-    "pre-optimisation" baseline (equivalent to what a naïve
+    "pre-optimization" baseline (equivalent to what a naive
     line-by-line CUDA→SYCL port would achieve on Intel XPU, since
     PyTorch's XPU backend already uses SYCL under the hood).
 
-  * **Optimised SYCL kernels** — the hand-tuned SYCL kernels from
+  * **Optimized SYCL kernels** — the hand-tuned SYCL kernels from
     ``lmcache.xpu_ops`` that use compile-time template
-    specialisation, larger work-groups, sub-group alignment, and
+    specialization, larger work-groups, sub-group alignment, and
     loop unrolling for maximum Intel XPU throughput.
 
 Usage
@@ -128,7 +128,7 @@ def _bench(fn, warmup=WARMUP_ITERS, iters=BENCH_ITERS) -> float:
 
 
 # ===================================================================
-# Pure-PyTorch reference implementations ("pre-optimisation")
+# Pure-PyTorch reference implementations ("pre-optimization")
 # ===================================================================
 def _pytorch_multi_layer_d2h(
     kv_cache: List[torch.Tensor],
@@ -300,7 +300,7 @@ def test_bench_multi_layer_d2h(num_tokens, gpu_kv_format):
         )
     )
 
-    # -- Optimised SYCL kernel ---------------------------------------
+    # -- Optimized SYCL kernel ---------------------------------------
     opt_ms = _bench(
         lambda: xpu_ops.multi_layer_kv_transfer(
             key_value_opt,

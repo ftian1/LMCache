@@ -7,11 +7,11 @@
 // Performance-critical design choices for Intel XPU (PVC / Arc /
 // Battlemage):
 //
-// 1. Work-group size 256 (vs CUDA's 128) – Intel XPU EUs have deep
+// 1. Work-group size 256 (vs CUDA's 128) -- Intel XPU EUs have deep
 //    hardware-thread scheduling; larger work-groups keep the EU ALUs
 //    fed and hide global-memory latency.
 //
-// 2. [[intel::reqd_sub_group_size(16)]] – locks SIMD lane width to
+// 2. [[intel::reqd_sub_group_size(16)]] -- locks SIMD lane width to
 //    16, which is the native width across all Intel discrete GPU
 //    families.  Avoids the compiler falling back to sub-group 32 on
 //    PVC (where it would halve occupancy for these kernels).
@@ -22,17 +22,17 @@
 //    and writes without control-flow hazards.
 //
 // 4. Sub-group cooperative prefetch via
-//    sycl::ext::intel::experimental::prefetch – hints to the L1
+//    sycl::ext::intel::experimental::prefetch -- hints to the L1
 //    cache controller to start fetching the next iteration's
 //    cache-lines while the current store is in flight.  Only issued
 //    by the first work-item in each sub-group (leader_in_sg) to
 //    avoid duplicate traffic.
 //
-// 5. 64-bit (int64_t) bulk transfers – packs two fp32 / four fp16 /
+// 5. 64-bit (int64_t) bulk transfers -- packs two fp32 / four fp16 /
 //    eight int8 values into a single 64-bit move, doubling the
 //    effective bandwidth compared to element-wise copies.
 //
-// 6. Fused K+V copy in inner loop (non-MLA) – the key and value
+// 6. Fused K+V copy in inner loop (non-MLA) -- the key and value
 //    stores are interleaved inside the same loop body, halving the
 //    number of index calculations and doubling the data moved per
 //    thread iteration.
@@ -53,7 +53,7 @@
 // ---------------------------------------------------------------------------
 // Tuning constants
 // ---------------------------------------------------------------------------
-// Sub-group (SIMD) width – 16 is native on PVC, DG2, and BMG.
+// Sub-group (SIMD) width -- 16 is native on PVC, DG2, and BMG.
 constexpr int INTEL_SUB_GROUP_SIZE = 16;
 
 // Maximum work-group size.  256 gives best occupancy / latency-
@@ -73,7 +73,7 @@ inline int round_up_to_sg(int n) {
 }
 
 // ---------------------------------------------------------------------------
-// Namespace lmc – device-side helper functions
+// Namespace lmc -- device-side helper functions
 // ---------------------------------------------------------------------------
 namespace lmc {
 
@@ -131,7 +131,7 @@ inline int64_t key_value_offset(const int k_or_v, const int layer_idx,
 }  // namespace lmc
 
 // ---------------------------------------------------------------------------
-// Pointer helper – returns a kernel-accessible pointer of the given type.
+// Pointer helper -- returns a kernel-accessible pointer of the given type.
 // For XPU tensors the USM device pointer is returned directly.
 // For CPU tensors the host pointer is returned; it must have been allocated
 // with USM host memory (e.g. via sycl::malloc_host) to be device-accessible.
@@ -151,7 +151,7 @@ T* get_kernel_ptr(TENSOR_TYPE& tensor) {
 }
 
 // ---------------------------------------------------------------------------
-// Kernel-launch helpers – multi-layer kernels
+// Kernel-launch helpers -- multi-layer kernels
 // ---------------------------------------------------------------------------
 
 /**
@@ -293,7 +293,7 @@ void submit_multi_layer_unilateral_kernel(
       skip_prefix_n_tokens, k_or_v_size, wg_size);
 
 // ---------------------------------------------------------------------------
-// multi_layer_kv_transfer – templated implementation
+// multi_layer_kv_transfer -- templated implementation
 // ---------------------------------------------------------------------------
 template <typename T>
 void multi_layer_kv_transfer_templated(
@@ -723,7 +723,7 @@ void single_layer_kv_transfer_sgl(torch::Tensor& lmc_key_value_cache,
 }
 
 // ---------------------------------------------------------------------------
-// Public API: load_and_reshape_flash (deprecated – unit tests only)
+// Public API: load_and_reshape_flash (deprecated -- unit tests only)
 // ---------------------------------------------------------------------------
 void load_and_reshape_flash(torch::Tensor& key_value, torch::Tensor& key_cache,
                             torch::Tensor& value_cache,
@@ -797,7 +797,7 @@ void load_and_reshape_flash(torch::Tensor& key_value, torch::Tensor& key_cache,
 }
 
 // ---------------------------------------------------------------------------
-// Public API: reshape_and_cache_back_flash (deprecated – unit
+// Public API: reshape_and_cache_back_flash (deprecated -- unit
 // tests only)
 // ---------------------------------------------------------------------------
 void reshape_and_cache_back_flash(torch::Tensor& key_value,
