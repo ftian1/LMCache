@@ -233,7 +233,8 @@ def sycl_extension() -> tuple[list, dict]:
     #   -fno-sycl-id-queries-fit-in-int
     #       Allow 64-bit index arithmetic in SYCL kernels.
     #   -ffast-math
-    #       Aggressive FP opts (safe: kernels only copy data, no FP math).
+    #       Aggressive FP opts (safe for current implementation: kernels
+    #       only copy data, no FP arithmetic.  Review if FP math is added).
     #   -funroll-loops
     #       Unroll inner copy loops for better instruction packing.
     ext_modules = [

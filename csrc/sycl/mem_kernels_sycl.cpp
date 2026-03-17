@@ -56,9 +56,10 @@
 // Sub-group (SIMD) width – 16 is native on PVC, DG2, and BMG.
 constexpr int INTEL_SUB_GROUP_SIZE = 16;
 
-// Maximum work-group size.  256 gives the best occupancy / latency-
-// hiding trade-off on Intel discrete GPUs.  Must be a multiple of
-// INTEL_SUB_GROUP_SIZE.
+// Maximum work-group size.  256 gives best occupancy / latency-
+// hiding trade-off on Intel discrete GPUs whose EUs can schedule
+// more hardware threads than CUDA SMs (which typically use 128).
+// Must be a multiple of INTEL_SUB_GROUP_SIZE.
 constexpr int MAX_WG_SIZE = 256;
 
 // ---------------------------------------------------------------------------
