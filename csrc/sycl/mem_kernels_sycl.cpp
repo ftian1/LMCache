@@ -199,6 +199,7 @@ inline int64_t page_buffer_offset(const int k_or_v, const int token_idx,
                      format == GPUKVFormat::NL_X_NBBS_ONE_HS) {
     return token_idx * scalars_per_token + scalar_offset;
   }
+  return 0;  // Unreachable for supported formats.
 }
 
 /// Loop-invariant base offset for the paged buffer.
@@ -227,6 +228,7 @@ inline int64_t page_buffer_base_offset(const int k_or_v,
                         format == GPUKVFormat::NL_X_NBBS_ONE_HS) {
     return token_idx * scalars_per_token;
   }
+  return 0;  // Unreachable for supported formats.
 }
 
 inline int64_t page_buffer_offset_unilateral(const int token_idx,
