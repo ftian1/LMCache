@@ -16,26 +16,29 @@
 //    families.  Avoids the compiler falling back to sub-group 32 on
 //    PVC (where it would halve occupancy for these kernels).
 //
-// 3. Compile-time template parameters for DIRECTION and USE_MLA –
+// 3. Compile-time template parameters for DIRECTION and USE_MLA --
 //    eliminates run-time branches inside the innermost loop,
 //    allowing the IGC (Intel Graphics Compiler) to schedule reads
 //    and writes without control-flow hazards.
 //
-// 4. Sub-group cooperative prefetch via
-//    sycl::ext::intel::experimental::prefetch -- hints to the L1
-//    cache controller to start fetching the next iteration's
-//    cache-lines while the current store is in flight.  Only issued
-//    by the first work-item in each sub-group (leader_in_sg) to
-//    avoid duplicate traffic.
+// 4. Hoisted loop-invariant base offsets -- integer division and
+//    modulo (used by flash_infer's block-based indexing) are
+//    computed once before the inner loop and reused via simple
+//    base+i addressing.  This avoids re-executing expensive 32-bit
+//    division on every loop iteration and helps the IGC schedule
+//    straight-line loads/stores.
 //
 // 5. 64-bit (int64_t) bulk transfers -- packs two fp32 / four fp16 /
 //    eight int8 values into a single 64-bit move, doubling the
 //    effective bandwidth compared to element-wise copies.
 //
-// 6. Fused K+V copy in inner loop (non-MLA) -- the key and value
-//    stores are interleaved inside the same loop body, halving the
-//    number of index calculations and doubling the data moved per
-//    thread iteration.
+// 6. Fused K+V work-groups (non-MLA multi-layer kernels) -- for
+//    formats that carry both key and value (k_or_v_size == 2), a
+//    specialised kernel processes both K and V within a single
+//    work-group.  This halves the total work-group count, avoids
+//    redundant slot-mapping reads and pointer-array lookups, and
+//    computes the (potentially expensive) block-index division only
+//    once per token+layer instead of twice.
 
 // The SYCL standard headers (sycl/accessor.hpp) reference the deprecated
 // 'host_buffer' internally even when user code only uses USM pointers.
@@ -198,6 +201,34 @@ inline int64_t page_buffer_offset(const int k_or_v, const int token_idx,
   }
 }
 
+/// Loop-invariant base offset for the paged buffer.
+/// page_buffer_offset(k_or_v, slot, i, ...) == base_offset(...) + i.
+/// Hoisting this out of the inner loop avoids re-computing the
+/// integer division / modulo (flash_infer) on every iteration.
+template <GPUKVFormat format>
+inline int64_t page_buffer_base_offset(const int k_or_v,
+                                       const int token_idx,
+                                       const int scalars_per_token,
+                                       const int page_buffer_size,
+                                       const int block_size) {
+  if constexpr (format == GPUKVFormat::NB_NL_TWO_BS_NH_HS) {
+    return k_or_v * page_buffer_size * scalars_per_token +
+           token_idx * scalars_per_token;
+  } else if constexpr (format == GPUKVFormat::NL_X_TWO_NB_BS_NH_HS) {
+    return k_or_v * page_buffer_size * scalars_per_token +
+           token_idx * scalars_per_token;
+  } else if constexpr (format == GPUKVFormat::NL_X_NB_TWO_BS_NH_HS) {
+    const int block_idx = token_idx / block_size;
+    const int block_offset = token_idx % block_size;
+    return block_idx * 2 * block_size * scalars_per_token +
+           k_or_v * block_size * scalars_per_token +
+           block_offset * scalars_per_token;
+  } else if constexpr (format == GPUKVFormat::NL_X_NB_BS_HS ||
+                        format == GPUKVFormat::NL_X_NBBS_ONE_HS) {
+    return token_idx * scalars_per_token;
+  }
+}
+
 inline int64_t page_buffer_offset_unilateral(const int token_idx,
                                              const int scalar_offset,
                                              const int scalars_per_token) {
@@ -211,6 +242,18 @@ inline int64_t key_value_offset(const int k_or_v, const int layer_idx,
   return k_or_v * num_layers * num_tokens * scalars_per_token +
          layer_idx * num_tokens * scalars_per_token +
          token_idx * scalars_per_token + scalar_offset;
+}
+
+/// Loop-invariant base offset for the LMCache key_value buffer.
+/// key_value_offset(k_or_v, layer, token, i, ...) == base(...) + i.
+inline int64_t key_value_base_offset(const int k_or_v, const int layer_idx,
+                                     const int token_idx,
+                                     const int scalars_per_token,
+                                     const int num_tokens,
+                                     const int num_layers) {
+  return k_or_v * num_layers * num_tokens * scalars_per_token +
+         layer_idx * num_tokens * scalars_per_token +
+         token_idx * scalars_per_token;
 }
 
 }  // namespace lmc
@@ -240,22 +283,21 @@ T* get_kernel_ptr(TENSOR_TYPE& tensor) {
 // ---------------------------------------------------------------------------
 
 /**
- * Submit the multi-layer KV transfer kernel for a specific
- * GPUKVFormat.
+ * Submit the multi-layer KV transfer kernel for MLA formats
+ * (k_or_v_size == 1).
  *
  * SYCL nd_range mapping (CUDA → SYCL):
  *   blockIdx.x  (token_id)  → item.get_group(2)
  *   blockIdx.y  (layer_id)  → item.get_group(1)
- *   blockIdx.z  (k_or_v)    → item.get_group(0)
  *   threadIdx.x (tid)       → item.get_local_id(2)
  *   blockDim.x  (nthreads)  → item.get_local_range(2)
  *
  * Optimizations over the naïve port:
  *   - DIRECTION is a compile-time bool (no branch in hot loop)
+ *   - Loop-invariant base offsets (including integer division for
+ *     flash_infer) are computed once before the inner loop
  *   - Work-group size rounded to sub-group multiple for full
  *     SIMD utilisation
- *   - Prefetch hints for the *next* loop iteration to overlap
- *     load latency with current-iteration compute/store
  */
 template <typename scalar_t, bool DIRECTION, GPUKVFormat format>
 void submit_multi_layer_kernel(sycl::queue& queue, scalar_t* key_value_ptr,
@@ -288,21 +330,95 @@ void submit_multi_layer_kernel(sycl::queue& queue, scalar_t* key_value_ptr,
 
         if (slot_idx < 0) return;
 
+        // Hoist loop-invariant base offsets (integer division for
+        // flash_infer happens here, once, not per loop iteration).
+        const int64_t lmc_base = lmc::key_value_base_offset(
+            k_or_v, layer_id, kv_token_id, scalars_per_token, num_tokens,
+            num_layers);
+        const int64_t vllm_base = lmc::page_buffer_base_offset<format>(
+            k_or_v, slot_idx, scalars_per_token, page_buffer_size, block_size);
+
         for (int i = tid; i < scalars_per_token; i += num_threads) {
-          const int64_t lmcache_offset =
-              lmc::key_value_offset(k_or_v, layer_id, kv_token_id, i,
-                                    scalars_per_token, num_tokens, num_layers);
+          if constexpr (DIRECTION) {
+            key_value_ptr[lmc_base + i] = paged_buffer_ptr[vllm_base + i];
+          } else {
+            paged_buffer_ptr[vllm_base + i] = key_value_ptr[lmc_base + i];
+          }
+        }
+      });
+}
 
-          const int64_t vllm_offset = lmc::page_buffer_offset<format>(
-              k_or_v, slot_idx, i, scalars_per_token, page_buffer_size,
-              block_size);
+/**
+ * Submit a fused K+V multi-layer kernel for non-MLA formats.
+ *
+ * Processes both key (k_or_v=0) and value (k_or_v=1) within the
+ * same work-group, halving the total number of work-groups compared
+ * to `submit_multi_layer_kernel` with k_or_v_size=2.
+ *
+ * Benefits on Intel XPU:
+ *   - Halves work-group dispatch overhead
+ *   - Slot mapping and pointer array are read once per token+layer
+ *     instead of twice (once for K, once for V)
+ *   - Integer division/modulo (flash_infer block mapping) is
+ *     computed once and reused for both K and V
+ *   - Interleaved K+V memory requests help hide latency
+ */
+template <typename scalar_t, bool DIRECTION, GPUKVFormat format>
+void submit_multi_layer_kernel_fused_kv(
+    sycl::queue& queue, scalar_t* key_value_ptr, scalar_t** page_buffer_ptrs,
+    const int64_t* slot_mapping_ptr, int scalars_per_token, int num_tokens,
+    int num_layers, int page_buffer_size, int block_size,
+    int skip_prefix_n_tokens, int wg_size) {
+  int num_transfer_tokens = num_tokens - skip_prefix_n_tokens;
+  if (num_transfer_tokens <= 0 || num_layers <= 0) return;
 
+  // Grid: (1, num_layers, num_transfer_tokens * wg_size)
+  // k_or_v dimension is gone -- both K and V handled in one work-group.
+  sycl::range<3> global_range(
+      1, static_cast<size_t>(num_layers),
+      static_cast<size_t>(num_transfer_tokens) * wg_size);
+  sycl::range<3> local_range(1, 1, static_cast<size_t>(wg_size));
+
+  queue.parallel_for(
+      sycl::nd_range<3>(global_range, local_range),
+      [=](sycl::nd_item<3> item) [[intel::reqd_sub_group_size(16)]] {
+        const int token_id = static_cast<int>(item.get_group(2));
+        const int layer_id = static_cast<int>(item.get_group(1));
+        const int tid = static_cast<int>(item.get_local_id(2));
+        const int num_threads = static_cast<int>(item.get_local_range(2));
+
+        const int kv_token_id = token_id + skip_prefix_n_tokens;
+        const int64_t slot_idx = slot_mapping_ptr[kv_token_id];
+        scalar_t* paged_buffer_ptr = page_buffer_ptrs[layer_id];
+
+        if (slot_idx < 0) return;
+
+        // Base offsets for K (k_or_v=0) and V (k_or_v=1).
+        // The expensive division/modulo (flash_infer) happens once.
+        const int64_t lmc_base_k = lmc::key_value_base_offset(
+            0, layer_id, kv_token_id, scalars_per_token, num_tokens,
+            num_layers);
+        const int64_t lmc_base_v = lmc::key_value_base_offset(
+            1, layer_id, kv_token_id, scalars_per_token, num_tokens,
+            num_layers);
+        const int64_t vllm_base_k = lmc::page_buffer_base_offset<format>(
+            0, slot_idx, scalars_per_token, page_buffer_size, block_size);
+        const int64_t vllm_base_v = lmc::page_buffer_base_offset<format>(
+            1, slot_idx, scalars_per_token, page_buffer_size, block_size);
+
+        for (int i = tid; i < scalars_per_token; i += num_threads) {
           if constexpr (DIRECTION) {
             // paged buffer → LMCache
-            key_value_ptr[lmcache_offset] = paged_buffer_ptr[vllm_offset];
+            key_value_ptr[lmc_base_k + i] =
+                paged_buffer_ptr[vllm_base_k + i];
+            key_value_ptr[lmc_base_v + i] =
+                paged_buffer_ptr[vllm_base_v + i];
           } else {
             // LMCache → paged buffer
-            paged_buffer_ptr[vllm_offset] = key_value_ptr[lmcache_offset];
+            paged_buffer_ptr[vllm_base_k + i] =
+                key_value_ptr[lmc_base_k + i];
+            paged_buffer_ptr[vllm_base_v + i] =
+                key_value_ptr[lmc_base_v + i];
           }
         }
       });
@@ -345,37 +461,45 @@ void submit_multi_layer_unilateral_kernel(
 
         if (slot_idx < 0) return;
 
+        const int64_t lmc_base = lmc::key_value_base_offset(
+            k_or_v, layer_id, token_id, scalars_per_token, num_tokens,
+            num_layers);
+        const int64_t sgl_base = slot_idx * scalars_per_token;
+
         for (int i = tid; i < scalars_per_token; i += num_threads) {
-          const int64_t lmcache_offset =
-              lmc::key_value_offset(k_or_v, layer_id, token_id, i,
-                                    scalars_per_token, num_tokens, num_layers);
-
-          const int64_t sgl_offset = lmc::page_buffer_offset_unilateral(
-              slot_idx, i, scalars_per_token);
-
           if (k_or_v == 0) {
             if constexpr (DIRECTION)
-              key_value_ptr[lmcache_offset] = key_ptr[sgl_offset];
+              key_value_ptr[lmc_base + i] = key_ptr[sgl_base + i];
             else
-              key_ptr[sgl_offset] = key_value_ptr[lmcache_offset];
+              key_ptr[sgl_base + i] = key_value_ptr[lmc_base + i];
           } else {
             if constexpr (DIRECTION)
-              key_value_ptr[lmcache_offset] = value_ptr[sgl_offset];
+              key_value_ptr[lmc_base + i] = value_ptr[sgl_base + i];
             else
-              value_ptr[sgl_offset] = key_value_ptr[lmcache_offset];
+              value_ptr[sgl_base + i] = key_value_ptr[lmc_base + i];
           }
         }
       });
 }
 
 // ---------------------------------------------------------------------------
-// Macro to dispatch multi-layer kernel with a specific GPUKVFormat
+// Macros to dispatch multi-layer kernels with a specific GPUKVFormat
+// ---------------------------------------------------------------------------
+// For MLA formats (k_or_v_size == 1): use the original per-component kernel.
+// For non-MLA formats (k_or_v_size == 2): use the fused K+V kernel that
+// halves work-groups and avoids redundant slot/pointer/division work.
 // ---------------------------------------------------------------------------
 #define LAUNCH_KERNEL_WITH_FORMAT(T, DIRECTION, FORMAT)                     \
   submit_multi_layer_kernel<T, DIRECTION, FORMAT>(                          \
       queue, key_value_ptr, page_buffer_ptrs, slot_mapping_ptr, num_xwords, \
       num_tokens, num_layers, page_buffer_size, block_size,                 \
       skip_prefix_n_tokens, k_or_v_size, wg_size);
+
+#define LAUNCH_FUSED_KV_KERNEL_WITH_FORMAT(T, DIRECTION, FORMAT)            \
+  submit_multi_layer_kernel_fused_kv<T, DIRECTION, FORMAT>(                 \
+      queue, key_value_ptr, page_buffer_ptrs, slot_mapping_ptr, num_xwords, \
+      num_tokens, num_layers, page_buffer_size, block_size,                 \
+      skip_prefix_n_tokens, wg_size);
 
 // ---------------------------------------------------------------------------
 // multi_layer_kv_transfer -- templated implementation
@@ -408,50 +532,75 @@ void multi_layer_kv_transfer_templated(
   sycl::queue& queue =
       lmc_get_sycl_queue(paged_memory_device.index());
 
-  if (direction == TransferDirection::H2D) {
-    switch (gpu_kv_format) {
-      case GPUKVFormat::NB_NL_TWO_BS_NH_HS:
-        LAUNCH_KERNEL_WITH_FORMAT(T, false, GPUKVFormat::NB_NL_TWO_BS_NH_HS);
-        break;
-      case GPUKVFormat::NL_X_TWO_NB_BS_NH_HS:
-        LAUNCH_KERNEL_WITH_FORMAT(T, false, GPUKVFormat::NL_X_TWO_NB_BS_NH_HS);
-        break;
-      case GPUKVFormat::NL_X_NB_TWO_BS_NH_HS:
-        LAUNCH_KERNEL_WITH_FORMAT(T, false, GPUKVFormat::NL_X_NB_TWO_BS_NH_HS);
-        break;
-      case GPUKVFormat::NL_X_NB_BS_HS:
-        LAUNCH_KERNEL_WITH_FORMAT(T, false, GPUKVFormat::NL_X_NB_BS_HS);
-        break;
-      case GPUKVFormat::NL_X_NBBS_ONE_HS:
-        LAUNCH_KERNEL_WITH_FORMAT(T, false, GPUKVFormat::NL_X_NBBS_ONE_HS);
-        break;
-      default:
-        throw std::runtime_error("Unsupported GPUKVFormat");
+  // Non-MLA formats use the fused K+V kernel (processes both K and V
+  // in a single work-group).  MLA formats (k_or_v_size==1) use the
+  // original per-component kernel.
+  if (k_or_v_size == 2) {
+    if (direction == TransferDirection::H2D) {
+      switch (gpu_kv_format) {
+        case GPUKVFormat::NB_NL_TWO_BS_NH_HS:
+          LAUNCH_FUSED_KV_KERNEL_WITH_FORMAT(
+              T, false, GPUKVFormat::NB_NL_TWO_BS_NH_HS);
+          break;
+        case GPUKVFormat::NL_X_TWO_NB_BS_NH_HS:
+          LAUNCH_FUSED_KV_KERNEL_WITH_FORMAT(
+              T, false, GPUKVFormat::NL_X_TWO_NB_BS_NH_HS);
+          break;
+        case GPUKVFormat::NL_X_NB_TWO_BS_NH_HS:
+          LAUNCH_FUSED_KV_KERNEL_WITH_FORMAT(
+              T, false, GPUKVFormat::NL_X_NB_TWO_BS_NH_HS);
+          break;
+        default:
+          throw std::runtime_error("Unsupported non-MLA GPUKVFormat");
+      }
+    } else {
+      switch (gpu_kv_format) {
+        case GPUKVFormat::NB_NL_TWO_BS_NH_HS:
+          LAUNCH_FUSED_KV_KERNEL_WITH_FORMAT(
+              T, true, GPUKVFormat::NB_NL_TWO_BS_NH_HS);
+          break;
+        case GPUKVFormat::NL_X_TWO_NB_BS_NH_HS:
+          LAUNCH_FUSED_KV_KERNEL_WITH_FORMAT(
+              T, true, GPUKVFormat::NL_X_TWO_NB_BS_NH_HS);
+          break;
+        case GPUKVFormat::NL_X_NB_TWO_BS_NH_HS:
+          LAUNCH_FUSED_KV_KERNEL_WITH_FORMAT(
+              T, true, GPUKVFormat::NL_X_NB_TWO_BS_NH_HS);
+          break;
+        default:
+          throw std::runtime_error("Unsupported non-MLA GPUKVFormat");
+      }
     }
   } else {
-    switch (gpu_kv_format) {
-      case GPUKVFormat::NB_NL_TWO_BS_NH_HS:
-        LAUNCH_KERNEL_WITH_FORMAT(T, true, GPUKVFormat::NB_NL_TWO_BS_NH_HS);
-        break;
-      case GPUKVFormat::NL_X_TWO_NB_BS_NH_HS:
-        LAUNCH_KERNEL_WITH_FORMAT(T, true, GPUKVFormat::NL_X_TWO_NB_BS_NH_HS);
-        break;
-      case GPUKVFormat::NL_X_NB_TWO_BS_NH_HS:
-        LAUNCH_KERNEL_WITH_FORMAT(T, true, GPUKVFormat::NL_X_NB_TWO_BS_NH_HS);
-        break;
-      case GPUKVFormat::NL_X_NB_BS_HS:
-        LAUNCH_KERNEL_WITH_FORMAT(T, true, GPUKVFormat::NL_X_NB_BS_HS);
-        break;
-      case GPUKVFormat::NL_X_NBBS_ONE_HS:
-        LAUNCH_KERNEL_WITH_FORMAT(T, true, GPUKVFormat::NL_X_NBBS_ONE_HS);
-        break;
-      default:
-        throw std::runtime_error("Unsupported GPUKVFormat");
+    // MLA path (k_or_v_size == 1)
+    if (direction == TransferDirection::H2D) {
+      switch (gpu_kv_format) {
+        case GPUKVFormat::NL_X_NB_BS_HS:
+          LAUNCH_KERNEL_WITH_FORMAT(T, false, GPUKVFormat::NL_X_NB_BS_HS);
+          break;
+        case GPUKVFormat::NL_X_NBBS_ONE_HS:
+          LAUNCH_KERNEL_WITH_FORMAT(T, false, GPUKVFormat::NL_X_NBBS_ONE_HS);
+          break;
+        default:
+          throw std::runtime_error("Unsupported MLA GPUKVFormat");
+      }
+    } else {
+      switch (gpu_kv_format) {
+        case GPUKVFormat::NL_X_NB_BS_HS:
+          LAUNCH_KERNEL_WITH_FORMAT(T, true, GPUKVFormat::NL_X_NB_BS_HS);
+          break;
+        case GPUKVFormat::NL_X_NBBS_ONE_HS:
+          LAUNCH_KERNEL_WITH_FORMAT(T, true, GPUKVFormat::NL_X_NBBS_ONE_HS);
+          break;
+        default:
+          throw std::runtime_error("Unsupported MLA GPUKVFormat");
+      }
     }
   }
 }
 
 #undef LAUNCH_KERNEL_WITH_FORMAT
+#undef LAUNCH_FUSED_KV_KERNEL_WITH_FORMAT
 
 // ---------------------------------------------------------------------------
 // Public API: multi_layer_kv_transfer
