@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Standard
-from typing import TYPE_CHECKING, Any, Tuple
+from typing import TYPE_CHECKING, Any, Optional, Tuple, Union
 
 # Third Party
 import torch
@@ -443,3 +443,116 @@ def get_dtype(kv_caches: Any, gpu_kv_format: "lmc_ops.GPUKVFormat") -> torch.dty
         return kv_caches[0].dtype
     else:
         raise ValueError(f"Unknown GPU KV Format: {gpu_kv_format}")
+
+
+def _split_token2d_kv(
+    token2d: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Split a token-major KV tensor into separate K and V tensors.
+
+    Accepts either:
+      - [2, T, D]
+      - [T, 2, D]
+
+    Args:
+        token2d: A 3-D tensor with a KV dimension of size 2.
+
+    Returns:
+        A ``(k_tok, v_tok)`` tuple where each has shape ``[T, D]``.
+
+    Raises:
+        ValueError: If *token2d* does not have exactly 3 dimensions or
+            the KV dimension cannot be identified.
+    """
+    if token2d.dim() != 3:
+        raise ValueError(f"Expected token2d dim=3, got {token2d.shape}")
+    if token2d.shape[0] == 2:  # [2, T, D]
+        return token2d[0], token2d[1]
+    if token2d.shape[1] == 2:  # [T, 2, D]
+        return token2d[:, 0, :], token2d[:, 1, :]
+    raise ValueError(f"Unrecognized token2d layout: {token2d.shape}")
+
+
+def _get_head_size_view(
+    kv_cache_layer: Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]],
+    *,
+    use_mla: bool,
+    gpu_kv_format: Optional[Any] = None,
+) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+    """Return flattened views suitable for ``index_copy_`` / ``index_select``.
+
+    Args:
+        kv_cache_layer: Either a single tensor (MLA or stacked KV) or a
+            ``(k, v)`` tuple.
+        use_mla: Whether the model uses Multi-head Latent Attention.
+        gpu_kv_format: Optional GPU KV format enum for explicit layout
+            interpretation.  When *None* the layout is inferred from
+            the tensor shape.
+
+    Returns:
+        For MLA: a 2-D tensor ``[P*B, HS]``.
+        For non-MLA: a ``(k_flat, v_flat)`` tuple each ``[P*B, NH*HS]``.
+
+    Raises:
+        ValueError: If the tensor shapes do not match any supported layout.
+    """
+    # MLA
+    if use_mla:
+        if not isinstance(kv_cache_layer, torch.Tensor):
+            raise ValueError("MLA expects kv_cache_layer as Tensor")
+        if kv_cache_layer.dim() != 3:
+            raise ValueError(f"MLA expects 3D [P,B,HS], got {kv_cache_layer.shape}")
+        p, b, hs = kv_cache_layer.shape
+        return kv_cache_layer.view(p * b, hs)
+
+    # non-MLA — (k, v) tuple
+    if not isinstance(kv_cache_layer, torch.Tensor):
+        k, v = kv_cache_layer
+        if k.dim() != 4 or v.dim() != 4:
+            raise ValueError(f"Expected (k,v) 4D [P,B,NH,HS], got {k.shape}, {v.shape}")
+        p, b, nh, hs = k.shape
+        if v.shape != (p, b, nh, hs):
+            raise ValueError(f"k/v shape mismatch: {k.shape} vs {v.shape}")
+        return k.view(p * b, nh * hs), v.view(p * b, nh * hs)
+
+    # non-MLA — single 5-D tensor
+    t = kv_cache_layer
+    if t.dim() != 5:
+        raise ValueError(f"Expected 5D tensor for non-MLA, got {t.shape}")
+
+    if gpu_kv_format is not None:
+        if gpu_kv_format == lmc_ops.GPUKVFormat.NL_X_TWO_NB_BS_NH_HS:
+            if t.shape[0] != 2:
+                raise ValueError(
+                    f"{gpu_kv_format} expects [2,NB,BS,NH,HS], got {t.shape}"
+                )
+            k, v = t[0], t[1]
+        elif gpu_kv_format == lmc_ops.GPUKVFormat.NL_X_NB_TWO_BS_NH_HS:
+            if t.shape[1] != 2:
+                raise ValueError(
+                    f"{gpu_kv_format} expects [NB,2,BS,NH,HS], got {t.shape}"
+                )
+            k, v = t[:, 0], t[:, 1]
+        else:
+            raise NotImplementedError(
+                f"gpu_kv_format={gpu_kv_format} not supported in non-MLA path here."
+            )
+    else:
+        if t.shape[0] == 2:
+            k, v = t[0], t[1]
+        elif t.shape[1] == 2:
+            k, v = t[:, 0], t[:, 1]
+        else:
+            raise ValueError(
+                "gpu_kv_format is None and tensor does not look like "
+                f"stacked KV. Expected axis0==2 or axis1==2, got {t.shape}"
+            )
+
+    if k.dim() != 4 or v.dim() != 4:
+        raise ValueError(f"Expected k/v 4D [NB,BS,NH,HS], got {k.shape}, {v.shape}")
+
+    nb, bs, nh, hs = k.shape
+    if v.shape != (nb, bs, nh, hs):
+        raise ValueError(f"k/v shape mismatch after decode: {k.shape} vs {v.shape}")
+
+    return k.view(nb * bs, nh * hs), v.view(nb * bs, nh * hs)
