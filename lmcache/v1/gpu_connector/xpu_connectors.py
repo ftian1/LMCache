@@ -31,6 +31,10 @@ from lmcache.v1.metadata import LMCacheMetadata
 
 logger = init_logger(__name__)
 
+# Valid format transitions for memory objects in the layerwise XPU connector.
+# Only transitions to KV_MLA_FMT are allowed because the XPU layerwise
+# connector produces MLA-formatted outputs when use_mla=True.  Transitions
+# to KV_T2D happen implicitly via the allocator, not via the connector.
 ALLOWED_FORMAT_TRANSITIONS = {
     (None, MemoryFormat.KV_MLA_FMT),
     (MemoryFormat.KV_MLA_FMT, MemoryFormat.KV_MLA_FMT),
@@ -449,6 +453,10 @@ class VLLMPagedMemLayerwiseXPUConnector(GPUConnectorInterface):
                             n = int(e - s)
                             if n <= 0:
                                 continue
+                            assert cursor + n <= staged.shape[0], (
+                                f"Staging buffer overflow: cursor={cursor}, "
+                                f"n={n}, buffer_size={staged.shape[0]}"
+                            )
                             src = _ensure_device(mem.tensor)
                             staged[cursor : cursor + n].copy_(src, non_blocking=True)
                             cursor += n
