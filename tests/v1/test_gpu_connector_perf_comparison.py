@@ -237,7 +237,7 @@ def test_xpu_connector_from_gpu_bench(benchmark, mock_xpu_sync):
         _run_xpu_from_gpu,
         args=(connector, memory_obj, slot_mapping, kvcaches, 0, CHUNK_SIZE),
         rounds=50,
-        iterations=100,
+        iterations=50,
         warmup_rounds=5,
     )
 
@@ -281,7 +281,7 @@ def test_xpu_connector_to_gpu_bench(benchmark, mock_xpu_sync):
         _run_xpu_to_gpu,
         args=(connector, memory_obj, slot_mapping, kvcaches_dst, 0, CHUNK_SIZE),
         rounds=50,
-        iterations=100,
+        iterations=50,
         warmup_rounds=5,
     )
 
@@ -329,19 +329,12 @@ def test_layerwise_gpu_connector_from_gpu_bench(benchmark):
     starts = [0]
     ends = [CHUNK_SIZE]
 
-    def _setup_memory_objs():
-        shape_single_layer = connector.get_shape(CHUNK_SIZE)
-        objs = []
-        for _ in range(NUM_LAYERS):
-            objs.append(
-                allocator.allocate(shape_single_layer, dtype, fmt=MemoryFormat.KV_T2D)
-            )
-        return [objs]  # [layers][chunks]
-
-    # Pre-allocate memory objects for the benchmark
-    memory_objs_outer = _setup_memory_objs()
-    # Transpose to [layers][chunks] format
-    memory_objs = [list(row) for row in zip(*memory_objs_outer, strict=False)]
+    # Pre-allocate memory objects in [layers][chunks] format
+    shape_single_layer = connector.get_shape(CHUNK_SIZE)
+    memory_objs = [
+        [allocator.allocate(shape_single_layer, dtype, fmt=MemoryFormat.KV_T2D)]
+        for _ in range(NUM_LAYERS)
+    ]
 
     def _bench_fn():
         _run_layerwise_from_gpu(
@@ -351,7 +344,7 @@ def test_layerwise_gpu_connector_from_gpu_bench(benchmark):
     benchmark.pedantic(
         _bench_fn,
         rounds=50,
-        iterations=10,
+        iterations=50,
         warmup_rounds=5,
     )
 
@@ -403,16 +396,12 @@ def test_layerwise_gpu_connector_to_gpu_bench(benchmark):
     starts = [0]
     ends = [CHUNK_SIZE]
 
-    # First populate memory_objs via from_gpu
+    # Pre-allocate memory objects in [layers][chunks] format and populate via from_gpu
     shape_single_layer = connector.get_shape(CHUNK_SIZE)
-    memory_objs_outer = []
-    layer_objs = []
-    for _ in range(NUM_LAYERS):
-        layer_objs.append(
-            allocator.allocate(shape_single_layer, dtype, fmt=MemoryFormat.KV_T2D)
-        )
-    memory_objs_outer.append(layer_objs)
-    memory_objs = [list(row) for row in zip(*memory_objs_outer, strict=False)]
+    memory_objs = [
+        [allocator.allocate(shape_single_layer, dtype, fmt=MemoryFormat.KV_T2D)]
+        for _ in range(NUM_LAYERS)
+    ]
 
     _run_layerwise_from_gpu(
         connector, memory_objs, starts, ends, kvcaches_src, slot_mapping
@@ -426,7 +415,7 @@ def test_layerwise_gpu_connector_to_gpu_bench(benchmark):
     benchmark.pedantic(
         _bench_fn,
         rounds=50,
-        iterations=10,
+        iterations=50,
         warmup_rounds=5,
     )
 
@@ -496,14 +485,10 @@ def test_xpu_vs_layerwise_gpu_connector_comparison(mock_xpu_sync):
         device=DEVICE,
     )
     lw_shape = lw_connector.get_shape(CHUNK_SIZE)
-    lw_mem_objs_outer = []
-    lw_layer_objs = []
-    for _ in range(NUM_LAYERS):
-        lw_layer_objs.append(
-            pin_allocator.allocate(lw_shape, dtype, fmt=MemoryFormat.KV_T2D)
-        )
-    lw_mem_objs_outer.append(lw_layer_objs)
-    lw_mem_objs = [list(row) for row in zip(*lw_mem_objs_outer, strict=False)]
+    lw_mem_objs = [
+        [pin_allocator.allocate(lw_shape, dtype, fmt=MemoryFormat.KV_T2D)]
+        for _ in range(NUM_LAYERS)
+    ]
 
     starts = [0]
     ends = [CHUNK_SIZE]
