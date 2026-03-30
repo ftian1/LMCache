@@ -403,3 +403,122 @@ def test_cpu_connector_skip_prefix():
     )
 
     allocator.free(mem_obj)
+
+
+# ---------------------------------------------------------------------------
+# Tests: end-to-end disk offloading
+# CPU KV cache → MemoryObj → disk → MemoryObj → CPU KV cache
+# ---------------------------------------------------------------------------
+
+
+def test_cpu_connector_disk_offload_roundtrip(tmp_path):
+    """End-to-end: CPU KV cache → MemoryObj → disk file → MemoryObj → CPU KV cache.
+
+    This validates that the full pipeline works on CPU: the connector
+    serialises paged KV data into a MemoryObj, the MemoryObj is written
+    to disk as raw bytes, then read back, and the connector restores
+    the data into a fresh paged KV cache that matches the original.
+    """
+    fmt = CPUKVFormat.NL_X_TWO_NB_BS_NH_HS
+
+    src = _generate_cpu_kv_caches(
+        NUM_LAYERS, NUM_BLOCKS, BLOCK_SIZE, NUM_HEADS, HEAD_SIZE, fmt
+    )
+    dst = _generate_cpu_kv_caches(
+        NUM_LAYERS, NUM_BLOCKS, BLOCK_SIZE, NUM_HEADS, HEAD_SIZE, fmt
+    )
+
+    slot_mapping = torch.tensor(
+        random.sample(range(NUM_BLOCKS * BLOCK_SIZE), NUM_TOKENS),
+        dtype=torch.int64,
+    )
+
+    allocator = AdHocMemoryAllocator()
+    conn_src = VLLMPagedMemCPUConnector(HIDDEN_DIM, NUM_LAYERS)
+    conn_dst = VLLMPagedMemCPUConnector(HIDDEN_DIM, NUM_LAYERS)
+
+    for start in range(0, NUM_TOKENS, CHUNK_SIZE):
+        end = min(start + CHUNK_SIZE, NUM_TOKENS)
+        shape = conn_src.get_shape(end - start)
+
+        # Step 1: CPU KV cache → MemoryObj (via connector)
+        mem_obj = allocator.allocate(shape, torch.bfloat16)
+        conn_src.from_gpu(mem_obj, start, end, kvcaches=src, slot_mapping=slot_mapping)
+
+        # Step 2: MemoryObj → disk (write raw bytes)
+        disk_path = tmp_path / f"chunk_{start}_{end}.bin"
+        buf = mem_obj.byte_array
+        with open(disk_path, "wb") as f:
+            f.write(buf)
+        saved_shape = mem_obj.metadata.shape
+        saved_dtype = mem_obj.metadata.dtype
+        saved_fmt = mem_obj.metadata.fmt
+        allocator.free(mem_obj)
+
+        # Step 3: disk → MemoryObj (read raw bytes)
+        mem_obj2 = allocator.allocate(saved_shape, saved_dtype)
+        mem_obj2.metadata.fmt = saved_fmt
+        buf2 = mem_obj2.byte_array
+        with open(disk_path, "rb") as f:
+            f.readinto(buf2)
+
+        # Step 4: MemoryObj → CPU KV cache (via connector)
+        conn_dst.to_gpu(mem_obj2, start, end, kvcaches=dst, slot_mapping=slot_mapping)
+        allocator.free(mem_obj2)
+
+    # Verify the round-trip matches
+    _check_paged_equal_at_slots(src, dst, slot_mapping, fmt, BLOCK_SIZE, HIDDEN_DIM)
+
+
+def test_cpu_connector_disk_offload_roundtrip_mla(tmp_path):
+    """End-to-end disk offload round-trip for MLA format."""
+    fmt = CPUKVFormat.NL_X_NB_BS_HS
+    mla_head_size = 128
+    mla_num_heads = 1
+    mla_hidden = mla_head_size
+
+    src = _generate_cpu_kv_caches(
+        NUM_LAYERS, NUM_BLOCKS, BLOCK_SIZE, mla_num_heads, mla_head_size, fmt
+    )
+    dst = _generate_cpu_kv_caches(
+        NUM_LAYERS, NUM_BLOCKS, BLOCK_SIZE, mla_num_heads, mla_head_size, fmt
+    )
+
+    slot_mapping = torch.tensor(
+        random.sample(range(NUM_BLOCKS * BLOCK_SIZE), NUM_TOKENS),
+        dtype=torch.int64,
+    )
+
+    allocator = AdHocMemoryAllocator()
+    conn_src = VLLMPagedMemCPUConnector(mla_hidden, NUM_LAYERS, use_mla=True)
+    conn_dst = VLLMPagedMemCPUConnector(mla_hidden, NUM_LAYERS, use_mla=True)
+
+    for start in range(0, NUM_TOKENS, CHUNK_SIZE):
+        end = min(start + CHUNK_SIZE, NUM_TOKENS)
+        shape = conn_src.get_shape(end - start)
+
+        # CPU KV cache → MemoryObj
+        mem_obj = allocator.allocate(shape, torch.bfloat16)
+        conn_src.from_gpu(mem_obj, start, end, kvcaches=src, slot_mapping=slot_mapping)
+        assert mem_obj.metadata.fmt == MemoryFormat.KV_MLA_FMT
+
+        # MemoryObj → disk
+        disk_path = tmp_path / f"mla_chunk_{start}_{end}.bin"
+        with open(disk_path, "wb") as f:
+            f.write(mem_obj.byte_array)
+        saved_shape = mem_obj.metadata.shape
+        saved_dtype = mem_obj.metadata.dtype
+        saved_fmt = mem_obj.metadata.fmt
+        allocator.free(mem_obj)
+
+        # disk → MemoryObj
+        mem_obj2 = allocator.allocate(saved_shape, saved_dtype)
+        mem_obj2.metadata.fmt = saved_fmt
+        with open(disk_path, "rb") as f:
+            f.readinto(mem_obj2.byte_array)
+
+        # MemoryObj → CPU KV cache
+        conn_dst.to_gpu(mem_obj2, start, end, kvcaches=dst, slot_mapping=slot_mapping)
+        allocator.free(mem_obj2)
+
+    _check_paged_equal_at_slots(src, dst, slot_mapping, fmt, BLOCK_SIZE, mla_hidden)

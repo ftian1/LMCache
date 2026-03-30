@@ -64,7 +64,7 @@ def allocate_and_copy_objects(
     allocator_backend: AllocatorBackendInterface,
     keys: Sequence[CacheEngineKey],
     src_memory_objs: list[MemoryObj],
-    stream: torch.cuda.Stream,
+    stream: Optional[torch.cuda.Stream],
 ) -> tuple[Sequence[CacheEngineKey], list[MemoryObj]]:
     """
     Allocate the memory objects and copy the data from src_memory_objs to
@@ -75,7 +75,8 @@ def allocate_and_copy_objects(
           objects
         keys: the cache engine keys corresponding to the memory objects
         src_memory_objs: the memory objects to copy from
-        stream: the cuda stream to run the copy in
+        stream: the cuda stream to run the copy in, or ``None`` for
+            synchronous CPU-only copies.
 
     Returns:
         - list of cache engine keys that corresponds to the memory objects
@@ -107,8 +108,11 @@ def allocate_and_copy_objects(
             memory_obj.ref_count_down()
             break
 
-        with torch.cuda.stream(stream):
-            memory_obj.tensor.copy_(src_memory_obj.tensor, non_blocking=True)
+        if stream is not None:
+            with torch.cuda.stream(stream):
+                memory_obj.tensor.copy_(src_memory_obj.tensor, non_blocking=True)
+        else:
+            memory_obj.tensor.copy_(src_memory_obj.tensor)
         allocated_objects.append(memory_obj)
 
     if stream is not None:
