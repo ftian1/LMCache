@@ -239,6 +239,10 @@ class VLLMPagedMemCPUConnector(GPUConnectorInterface):
         hidden_dim_size: Hidden dimension of the KV cache
             (``num_heads * head_size``).
         num_layers: Number of transformer layers.
+
+    Keyword Args:
+        use_mla: If ``True``, use MLA format (single combined tensor per
+            layer instead of separate K/V). Defaults to ``False``.
     """
 
     def __init__(
@@ -323,7 +327,7 @@ class VLLMPagedMemCPUConnector(GPUConnectorInterface):
     # GPUConnectorInterface implementation
     # ------------------------------------------------------------------
 
-    def to_gpu(self, memory_obj: MemoryObj, start: int, end: int, **kwargs):
+    def to_gpu(self, memory_obj: MemoryObj, start: int, end: int, **kwargs) -> None:
         """Copy data from a *MemoryObj* into the paged CPU KV caches.
 
         Despite the name (inherited from the GPU interface), this method
@@ -388,7 +392,7 @@ class VLLMPagedMemCPUConnector(GPUConnectorInterface):
                 self.head_size,
             )
 
-    def from_gpu(self, memory_obj: MemoryObj, start: int, end: int, **kwargs):
+    def from_gpu(self, memory_obj: MemoryObj, start: int, end: int, **kwargs) -> None:
         """Copy data from the paged CPU KV caches into a *MemoryObj*.
 
         Despite the name (inherited from the GPU interface), this method
@@ -434,7 +438,13 @@ class VLLMPagedMemCPUConnector(GPUConnectorInterface):
         if self.use_mla:
             memory_obj.metadata.fmt = MemoryFormat.KV_MLA_FMT
 
-    def batched_to_gpu(self, memory_objs, starts, ends, **kwargs):
+    def batched_to_gpu(
+        self,
+        memory_objs: List[MemoryObj],
+        starts: List[int],
+        ends: List[int],
+        **kwargs,
+    ) -> None:
         """Batched ``to_gpu`` for the aggregated (non-layerwise) case.
 
         Iterates over the given memory objects and writes each one into
@@ -448,7 +458,13 @@ class VLLMPagedMemCPUConnector(GPUConnectorInterface):
         for memory_obj, start, end in zip(memory_objs, starts, ends, strict=False):
             self.to_gpu(memory_obj, start, end, **kwargs)
 
-    def batched_from_gpu(self, memory_objs, starts, ends, **kwargs):
+    def batched_from_gpu(
+        self,
+        memory_objs: List[MemoryObj],
+        starts: List[int],
+        ends: List[int],
+        **kwargs,
+    ) -> None:
         """Batched ``from_gpu`` for the aggregated (non-layerwise) case.
 
         Iterates over the given memory objects and reads data from the
