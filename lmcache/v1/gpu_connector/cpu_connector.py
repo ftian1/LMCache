@@ -21,6 +21,8 @@ from lmcache.v1.metadata import LMCacheMetadata
 
 logger = init_logger(__name__)
 
+_oob_warning_logged = False
+
 
 # ---------------------------------------------------------------------------
 # CPU-compatible KV cache format enum (mirrors the GPU formats but without
@@ -120,7 +122,15 @@ def _get_hidden_dim(kv_caches: List[torch.Tensor], fmt: CPUKVFormat) -> int:
 
 
 def _get_num_blocks_for_layer(kv_layer: torch.Tensor, fmt: CPUKVFormat) -> int:
-    """Return the number of blocks from a single KV-layer tensor."""
+    """Return the number of blocks from a single KV-layer tensor.
+
+    Args:
+        kv_layer: Single-layer paged KV cache tensor.
+        fmt: The detected :class:`CPUKVFormat` of the tensor.
+
+    Returns:
+        The number of blocks (NB) in the tensor.
+    """
     if fmt == CPUKVFormat.NL_X_TWO_NB_BS_NH_HS:
         return kv_layer.shape[1]  # [2, NB, BS, NH, HS]
     # NL_X_NB_TWO_BS_NH_HS: [NB, 2, BS, NH, HS]
@@ -138,19 +148,29 @@ def _clamp_slot_indices(
     This mirrors GPU connector behaviour where out-of-bounds memory
     accesses silently read/write adjacent data instead of crashing.
 
-    A warning is emitted the first time clamping is triggered.
+    Args:
+        slot_indices: 1-D tensor of slot ids.
+        num_blocks: Number of blocks in the KV cache tensor.
+        block_size: Block size of the paged cache.
+
+    Returns:
+        The (possibly clamped) slot indices tensor.
     """
+    global _oob_warning_logged  # noqa: PLW0603
     page_buffer_size = num_blocks * block_size
     needs_clamp = (slot_indices < 0).any() or (slot_indices >= page_buffer_size).any()
     if needs_clamp:
-        logger.warning(
-            "slot_mapping contains out-of-range slot indices "
-            "(min=%d, max=%d, valid range [0, %d)). "
-            "Clamping to prevent IndexError.",
-            int(slot_indices.min().item()),
-            int(slot_indices.max().item()),
-            page_buffer_size,
-        )
+        if not _oob_warning_logged:
+            logger.warning(
+                "slot_mapping contains out-of-range slot indices "
+                "(min=%d, max=%d, valid range [0, %d)). "
+                "Clamping to prevent IndexError. "
+                "This warning is logged only once.",
+                int(slot_indices.min().item()),
+                int(slot_indices.max().item()),
+                page_buffer_size,
+            )
+            _oob_warning_logged = True
         slot_indices = torch.clamp(slot_indices, min=0, max=page_buffer_size - 1)
     return slot_indices
 
