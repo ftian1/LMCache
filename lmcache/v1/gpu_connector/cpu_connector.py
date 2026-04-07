@@ -119,6 +119,42 @@ def _get_hidden_dim(kv_caches: List[torch.Tensor], fmt: CPUKVFormat) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _get_num_blocks_for_layer(kv_layer: torch.Tensor, fmt: CPUKVFormat) -> int:
+    """Return the number of blocks from a single KV-layer tensor."""
+    if fmt == CPUKVFormat.NL_X_TWO_NB_BS_NH_HS:
+        return kv_layer.shape[1]  # [2, NB, BS, NH, HS]
+    # NL_X_NB_TWO_BS_NH_HS: [NB, 2, BS, NH, HS]
+    # NL_X_NB_BS_HS:         [NB, BS, HS]
+    return kv_layer.shape[0]
+
+
+def _clamp_slot_indices(
+    slot_indices: torch.Tensor,
+    num_blocks: int,
+    block_size: int,
+) -> torch.Tensor:
+    """Clamp *slot_indices* to ``[0, num_blocks * block_size - 1]``.
+
+    This mirrors GPU connector behaviour where out-of-bounds memory
+    accesses silently read/write adjacent data instead of crashing.
+
+    A warning is emitted the first time clamping is triggered.
+    """
+    page_buffer_size = num_blocks * block_size
+    needs_clamp = (slot_indices < 0).any() or (slot_indices >= page_buffer_size).any()
+    if needs_clamp:
+        logger.warning(
+            "slot_mapping contains out-of-range slot indices "
+            "(min=%d, max=%d, valid range [0, %d)). "
+            "Clamping to prevent IndexError.",
+            int(slot_indices.min().item()),
+            int(slot_indices.max().item()),
+            page_buffer_size,
+        )
+        slot_indices = torch.clamp(slot_indices, min=0, max=page_buffer_size - 1)
+    return slot_indices
+
+
 def _gather_from_paged_kv(
     kv_layer: torch.Tensor,
     slot_indices: torch.Tensor,
@@ -139,6 +175,9 @@ def _gather_from_paged_kv(
         Tensor of shape ``[kv_size, num_tokens, hidden_dim]`` where
         *kv_size* is 2 for non-MLA formats and 1 for MLA.
     """
+    num_blocks = _get_num_blocks_for_layer(kv_layer, fmt)
+    slot_indices = _clamp_slot_indices(slot_indices, num_blocks, block_size)
+
     block_indices = torch.div(slot_indices, block_size, rounding_mode="trunc")
     block_offsets = slot_indices % block_size
 
@@ -182,6 +221,9 @@ def _scatter_to_paged_kv(
         num_heads: Number of KV heads.
         head_size: Head dimension size.
     """
+    num_blocks = _get_num_blocks_for_layer(kv_layer, fmt)
+    slot_indices = _clamp_slot_indices(slot_indices, num_blocks, block_size)
+
     block_indices = torch.div(slot_indices, block_size, rounding_mode="trunc")
     block_offsets = slot_indices % block_size
     num_tokens = slot_indices.shape[0]

@@ -334,8 +334,52 @@ def test_cpu_connector_wrong_format_for_to_gpu():
 
 
 # ---------------------------------------------------------------------------
-# Tests: get_shape
+# Tests: out-of-bounds slot_mapping (clamping)
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "fmt",
+    [
+        CPUKVFormat.NL_X_TWO_NB_BS_NH_HS,
+        CPUKVFormat.NL_X_NB_TWO_BS_NH_HS,
+        CPUKVFormat.NL_X_NB_BS_HS,
+    ],
+)
+def test_cpu_connector_oob_slot_mapping_does_not_crash(fmt):
+    """Out-of-bounds slot indices should be clamped, not crash."""
+    is_mla = fmt == CPUKVFormat.NL_X_NB_BS_HS
+    num_heads_arg = 1 if is_mla else NUM_HEADS
+    head_size_arg = HEAD_SIZE if not is_mla else 128
+    hidden = head_size_arg if is_mla else NUM_HEADS * HEAD_SIZE
+
+    kv = _generate_cpu_kv_caches(
+        NUM_LAYERS, NUM_BLOCKS, BLOCK_SIZE, num_heads_arg, head_size_arg, fmt
+    )
+
+    # Include valid slots + intentionally out-of-bounds slots
+    page_buffer_size = NUM_BLOCKS * BLOCK_SIZE
+    valid_slots = random.sample(range(page_buffer_size), min(5, page_buffer_size))
+    oob_slots = [page_buffer_size + 100, page_buffer_size + 200]
+    slot_mapping = torch.tensor(valid_slots + oob_slots, dtype=torch.int64)
+    num_tokens = len(slot_mapping)
+
+    allocator = AdHocMemoryAllocator()
+    conn = VLLMPagedMemCPUConnector(hidden, NUM_LAYERS, use_mla=is_mla)
+    shape = conn.get_shape(num_tokens)
+    mem_obj = allocator.allocate(shape, torch.bfloat16)
+
+    # from_gpu with OOB slots should not raise
+    conn.from_gpu(mem_obj, 0, num_tokens, kvcaches=kv, slot_mapping=slot_mapping)
+
+    dst = _generate_cpu_kv_caches(
+        NUM_LAYERS, NUM_BLOCKS, BLOCK_SIZE, num_heads_arg, head_size_arg, fmt
+    )
+    conn_dst = VLLMPagedMemCPUConnector(hidden, NUM_LAYERS, use_mla=is_mla)
+    # to_gpu with OOB slots should not raise
+    conn_dst.to_gpu(mem_obj, 0, num_tokens, kvcaches=dst, slot_mapping=slot_mapping)
+
+    allocator.free(mem_obj)
 
 
 def test_cpu_connector_get_shape():
