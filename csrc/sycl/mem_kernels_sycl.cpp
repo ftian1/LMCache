@@ -39,6 +39,18 @@
 //    redundant slot-mapping reads and pointer-array lookups, and
 //    computes the (potentially expensive) block-index division only
 //    once per token+layer instead of twice.
+//
+// 7. Device-staging for H2D transfers -- when the LMCache buffer
+//    lives on CPU (USM-host / pinned memory), H2D scatter kernels
+//    would read from host memory over PCIe, incurring a full
+//    round-trip latency on every load.  Unlike NVIDIA GPUs (which
+//    cache BAR-mapped host reads in L2), Intel XPU exposes host
+//    pointers without GPU-side caching.  To avoid this bottleneck,
+//    all H2D public API functions first bulk-copy the CPU tensor to
+//    a temporary device buffer (contiguous DMA, ~full PCIe
+//    bandwidth), then run the scatter kernel with both source and
+//    destination on device.  D2H is unaffected because GPU writes
+//    to host memory are fire-and-forget (no stall).
 
 // The SYCL standard headers (sycl/accessor.hpp) reference the deprecated
 // 'host_buffer' internally even when user code only uses USM pointers.
@@ -178,6 +190,41 @@ inline int64_t key_value_base_offset(const int k_or_v, const int layer_idx,
 }
 
 }  // namespace lmc
+
+// ---------------------------------------------------------------------------
+// Device-staging helper for H2D transfers.
+//
+// On Intel XPU, GPU kernels that read from USM-host (pinned CPU)
+// memory suffer from high PCIe round-trip latency on every load.
+// NVIDIA GPUs mitigate this with L2-cached BAR-mapped host memory
+// (cudaHostGetDevicePointer), but Intel's Level-Zero runtime exposes
+// host pointers without equivalent GPU-side caching.
+//
+// The result is a large asymmetry:
+//   - D2H (from_gpu): GPU reads device memory (fast), writes to host
+//     via PCIe (fire-and-forget writes, no stall) → fast.
+//   - H2D (to_gpu): GPU reads host memory over PCIe (each load
+//     stalls on round-trip latency) → slow.
+//
+// The fix is to stage CPU tensors into a temporary device buffer
+// using a single bulk DMA copy (contiguous memcpy), then run the
+// scatter kernel with both source and destination on device.
+//
+// `stage_to_device` performs this staging on the **current XPU
+// stream** so subsequent kernel launches on the same stream see the
+// data without explicit synchronisation.
+// ---------------------------------------------------------------------------
+inline torch::Tensor stage_to_device(const torch::Tensor& tensor,
+                                     const torch::Device& target_device) {
+  if (tensor.device() == target_device) {
+    return tensor;  // already on device — no copy
+  }
+  // Allocate a device tensor and enqueue a bulk memcpy on the
+  // current stream.  non_blocking=true keeps this asynchronous;
+  // ordering is guaranteed because the kernel launches on the same
+  // stream.
+  return tensor.to(target_device, /*non_blocking=*/true);
+}
 
 // ---------------------------------------------------------------------------
 // Pointer helper -- returns a kernel-accessible pointer of the given type.
@@ -528,13 +575,22 @@ void multi_layer_kv_transfer(
     const int page_buffer_size, const TransferDirection direction,
     const GPUKVFormat gpu_kv_format, const int block_size,
     const int skip_prefix_n_tokens) {
-  int num_origin_elements = key_value.size(3);
-  int copy_size = num_origin_elements * key_value.element_size();
+  // Stage CPU tensor to device for H2D to avoid slow scattered
+  // PCIe reads (see stage_to_device comment for rationale).
+  torch::Tensor staged_kv;
+  torch::Tensor& kv_ref = key_value;
+  if (direction == TransferDirection::H2D && key_value.device().is_cpu()) {
+    staged_kv = stage_to_device(key_value, paged_memory_device);
+    kv_ref = staged_kv;
+  }
+
+  int num_origin_elements = kv_ref.size(3);
+  int copy_size = num_origin_elements * kv_ref.element_size();
 
 #define LAUNCH_MULTI_LAYER_KV_TRANSFER(type)                          \
   do {                                                                \
     multi_layer_kv_transfer_templated<type>(                          \
-        key_value, key_value_ptrs, slot_mapping, paged_memory_device, \
+        kv_ref, key_value_ptrs, slot_mapping, paged_memory_device,    \
         page_buffer_size, direction, gpu_kv_format, block_size,       \
         skip_prefix_n_tokens);                                        \
   } while (0)
@@ -560,26 +616,36 @@ void multi_layer_kv_transfer_unilateral(
     const GPUKVFormat gpu_kv_format) {
   const bool use_mla = lmc::is_mla(gpu_kv_format);
   // MLA case collapses back to multi_layer_kv_transfer
+  // (staging is handled there)
   if (use_mla) {
     return multi_layer_kv_transfer(key_value, key_value_ptrs, slot_mapping,
                                    paged_memory_device, page_buffer_size,
                                    direction, gpu_kv_format);
   }
 
-  int64_t* key_value_ptr = get_kernel_ptr<int64_t, torch::Tensor>(key_value);
+  // Stage CPU tensor to device for H2D to avoid slow scattered
+  // PCIe reads (see stage_to_device comment for rationale).
+  torch::Tensor staged_kv;
+  torch::Tensor& kv_ref = key_value;
+  if (direction == TransferDirection::H2D && key_value.device().is_cpu()) {
+    staged_kv = stage_to_device(key_value, paged_memory_device);
+    kv_ref = staged_kv;
+  }
+
+  int64_t* key_value_ptr = get_kernel_ptr<int64_t, torch::Tensor>(kv_ref);
   int64_t** page_buffer_ptrs =
       get_kernel_ptr<int64_t*, const torch::Tensor>(key_value_ptrs);
   const int64_t* slot_mapping_ptr =
       get_kernel_ptr<const int64_t, const torch::Tensor>(slot_mapping);
 
-  int num_layers = key_value.size(1);
+  int num_layers = kv_ref.size(1);
   int num_tokens = slot_mapping.size(0);
-  int num_origin_elements = key_value.size(3);
-  int elements_per_qword = 8 / key_value.element_size();
+  int num_origin_elements = kv_ref.size(3);
+  int elements_per_qword = 8 / kv_ref.element_size();
   int num_qwords = num_origin_elements / elements_per_qword;
 
   int k_or_v_size = 2;
-  int kv_num_tokens = key_value.size(2);
+  int kv_num_tokens = kv_ref.size(2);
   int wg_size = round_up_to_sg(std::min(num_qwords, MAX_WG_SIZE));
 
   const c10::OptionalDeviceGuard device_guard(paged_memory_device);
@@ -667,8 +733,19 @@ void single_layer_kv_transfer(torch::Tensor& lmc_key_value_cache,
                               const TransferDirection direction,
                               const GPUKVFormat gpu_kv_format,
                               const bool token_major) {
+  // Stage CPU tensor to device for H2D to avoid slow scattered
+  // PCIe reads (see stage_to_device comment for rationale).
+  torch::Tensor staged_lmc;
+  torch::Tensor& lmc_ref = lmc_key_value_cache;
+  if (direction == TransferDirection::H2D &&
+      lmc_key_value_cache.device().is_cpu()) {
+    staged_lmc =
+        stage_to_device(lmc_key_value_cache, vllm_key_value_cache.device());
+    lmc_ref = staged_lmc;
+  }
+
   int64_t* lmc_key_value_cache_ptr =
-      get_kernel_ptr<int64_t, torch::Tensor>(lmc_key_value_cache);
+      get_kernel_ptr<int64_t, torch::Tensor>(lmc_ref);
   int64_t* vllm_key_value_cache_ptr =
       get_kernel_ptr<int64_t, torch::Tensor>(vllm_key_value_cache);
   const int64_t* slot_mapping_ptr =
@@ -696,14 +773,14 @@ void single_layer_kv_transfer(torch::Tensor& lmc_key_value_cache,
   int lmc_stride;
   int lmc_value_offset;
   if (use_mla) {
-    lmc_stride = lmc_key_value_cache.stride(0) / elements_per_entry;
+    lmc_stride = lmc_ref.stride(0) / elements_per_entry;
     lmc_value_offset = 0;
   } else if (token_major) {
-    lmc_stride = lmc_key_value_cache.stride(0) / elements_per_entry;
-    lmc_value_offset = lmc_key_value_cache.stride(1) / elements_per_entry;
+    lmc_stride = lmc_ref.stride(0) / elements_per_entry;
+    lmc_value_offset = lmc_ref.stride(1) / elements_per_entry;
   } else {
-    lmc_stride = lmc_key_value_cache.stride(1) / elements_per_entry;
-    lmc_value_offset = lmc_key_value_cache.stride(0) / elements_per_entry;
+    lmc_stride = lmc_ref.stride(1) / elements_per_entry;
+    lmc_value_offset = lmc_ref.stride(0) / elements_per_entry;
   }
 
   int vllm_block_key_stride_in_64bit;
@@ -821,8 +898,19 @@ void single_layer_kv_transfer_sgl(torch::Tensor& lmc_key_value_cache,
                                   torch::Tensor& slot_mapping,
                                   const TransferDirection direction,
                                   const bool token_major) {
+  // Stage CPU tensor to device for H2D to avoid slow scattered
+  // PCIe reads (see stage_to_device comment for rationale).
+  torch::Tensor staged_lmc;
+  torch::Tensor& lmc_ref = lmc_key_value_cache;
+  if (direction == TransferDirection::H2D &&
+      lmc_key_value_cache.device().is_cpu()) {
+    staged_lmc =
+        stage_to_device(lmc_key_value_cache, sgl_key_cache.device());
+    lmc_ref = staged_lmc;
+  }
+
   int64_t* lmc_key_value_cache_ptr =
-      get_kernel_ptr<int64_t, torch::Tensor>(lmc_key_value_cache);
+      get_kernel_ptr<int64_t, torch::Tensor>(lmc_ref);
   int64_t* sgl_key_cache_ptr =
       get_kernel_ptr<int64_t, torch::Tensor>(sgl_key_cache);
   int64_t* sgl_value_cache_ptr =
@@ -840,11 +928,11 @@ void single_layer_kv_transfer_sgl(torch::Tensor& lmc_key_value_cache,
   int lmc_stride;
   int lmc_value_offset;
   if (token_major) {
-    lmc_stride = lmc_key_value_cache.stride(0) / elements_per_entry;
-    lmc_value_offset = lmc_key_value_cache.stride(1) / elements_per_entry;
+    lmc_stride = lmc_ref.stride(0) / elements_per_entry;
+    lmc_value_offset = lmc_ref.stride(1) / elements_per_entry;
   } else {
-    lmc_stride = lmc_key_value_cache.stride(1) / elements_per_entry;
-    lmc_value_offset = lmc_key_value_cache.stride(0) / elements_per_entry;
+    lmc_stride = lmc_ref.stride(1) / elements_per_entry;
+    lmc_value_offset = lmc_ref.stride(0) / elements_per_entry;
   }
 
   int block_stride_in_64bit = sgl_key_cache.stride(0) / elements_per_entry;
@@ -955,10 +1043,18 @@ void reshape_and_cache_back_flash(torch::Tensor& key_value,
                                   torch::Tensor& value_cache,
                                   torch::Tensor& slot_mapping,
                                   const int layer_idx) {
+  // Stage CPU tensor to device for this H2D operation.
+  torch::Tensor staged_kv;
+  torch::Tensor& kv_ref = key_value;
+  if (key_value.device().is_cpu()) {
+    staged_kv = stage_to_device(key_value, key_cache.device());
+    kv_ref = staged_kv;
+  }
+
   int64_t* key_cache_ptr = get_kernel_ptr<int64_t, torch::Tensor>(key_cache);
   int64_t* value_cache_ptr =
       get_kernel_ptr<int64_t, torch::Tensor>(value_cache);
-  int64_t* key_value_ptr = get_kernel_ptr<int64_t, torch::Tensor>(key_value);
+  int64_t* key_value_ptr = get_kernel_ptr<int64_t, torch::Tensor>(kv_ref);
   const int64_t* slot_mapping_ptr =
       get_kernel_ptr<const int64_t, const torch::Tensor>(slot_mapping);
 
@@ -967,11 +1063,11 @@ void reshape_and_cache_back_flash(torch::Tensor& key_value,
   int num_heads = key_cache.size(2);
   int head_size_in_64bit = key_cache.size(3) / elements_per_entry;
   int block_size = key_cache.size(1);
-  int key_value_stride = key_value.stride(2) / elements_per_entry;
-  int num_layers = key_value.size(1);
-  int key_layer_offset = layer_idx * key_value.stride(1) / elements_per_entry;
+  int key_value_stride = kv_ref.stride(2) / elements_per_entry;
+  int num_layers = kv_ref.size(1);
+  int key_layer_offset = layer_idx * kv_ref.stride(1) / elements_per_entry;
   int value_layer_offset =
-      (layer_idx + num_layers) * key_value.stride(1) / elements_per_entry;
+      (layer_idx + num_layers) * kv_ref.stride(1) / elements_per_entry;
   int block_stride_in_64bit = key_cache.stride(0) / elements_per_entry;
   TORCH_CHECK(key_cache.stride(0) == value_cache.stride(0));
 
