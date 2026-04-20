@@ -1,17 +1,20 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Performance comparison tests between VLLMPagedMemLayerwiseGPUConnector
-(CUDA kernels with CUDA streams) and VLLMPagedMemLayerwiseXPUConnector
-(pure PyTorch index_select/index_copy_ with XPU streams).
+"""Performance comparison benchmarks for GPU connector implementations.
 
-Both connectors follow the same layerwise generator protocol:
+**Section 1 — Layerwise connectors**
 
-- ``batched_from_gpu(...)`` yields ``num_layers + 1`` times
-- ``batched_to_gpu(...)`` yields ``num_layers + 2`` times
+Compares ``VLLMPagedMemLayerwiseGPUConnector`` (CUDA kernels + streams)
+vs ``VLLMPagedMemLayerwiseXPUConnector`` (pure PyTorch index ops + XPU
+streams).  Both follow the same generator protocol (``batched_from_gpu``
+yields ``num_layers + 1`` times; ``batched_to_gpu`` yields
+``num_layers + 2`` times).
 
-The CUDA connector uses custom CUDA kernels
-(``lmc_ops.single_layer_kv_transfer``) for data transfer, while the XPU
-connector uses pure PyTorch tensor operations (``index_select`` /
-``index_copy_``).
+**Section 2 — V2 (non-layerwise) connectors**
+
+Compares ``VLLMPagedMemGPUConnectorV2`` (CUDA kernels via
+``lmc_ops.multi_layer_kv_transfer``) vs ``VLLMPagedMemXPUConnectorV2``
+(pure PyTorch ``index_select`` / ``index_copy_``).  Both expose a simple
+``from_gpu`` / ``to_gpu`` API that transfers all layers in one call.
 
 Run with:
     pytest -xvs tests/v1/test_gpu_connector_perf_comparison.py
@@ -31,10 +34,12 @@ import torch
 
 # First Party
 from lmcache.v1.gpu_connector.gpu_connectors import (
+    VLLMPagedMemGPUConnectorV2,
     VLLMPagedMemLayerwiseGPUConnector,
 )
 from lmcache.v1.gpu_connector.xpu_connectors import (
     VLLMPagedMemLayerwiseXPUConnector,
+    VLLMPagedMemXPUConnectorV2,
 )
 from lmcache.v1.memory_management import (
     MemoryFormat,
@@ -656,4 +661,395 @@ def test_layerwise_gpu_vs_xpu_connector_comparison(mock_xpu_as_cuda):
     assert pin_allocator.memcheck()
     assert gpu_connector.gpu_buffer_allocator.memcheck()
     assert xpu_connector.gpu_buffer_allocator.memcheck()
+    pin_allocator.close()
+
+
+# ===========================================================================
+# Section 2 — V2 (non-layerwise) connectors
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# V2 helpers
+# ---------------------------------------------------------------------------
+
+
+def _run_v2_from_gpu(connector, memory_obj, slot_mapping, kvcaches, start, end):
+    """Execute a V2 connector ``from_gpu`` and synchronize."""
+    connector.from_gpu(
+        memory_obj,
+        start,
+        end,
+        kvcaches=kvcaches,
+        slot_mapping=slot_mapping,
+        offset=0,
+    )
+    torch.cuda.synchronize()
+
+
+def _run_v2_to_gpu(connector, memory_obj, slot_mapping, kvcaches, start, end):
+    """Execute a V2 connector ``to_gpu`` and synchronize."""
+    connector.to_gpu(
+        memory_obj,
+        start,
+        end,
+        kvcaches=kvcaches,
+        slot_mapping=slot_mapping,
+        offset=0,
+    )
+    torch.cuda.synchronize()
+
+
+# ---------------------------------------------------------------------------
+# Benchmark: VLLMPagedMemGPUConnectorV2  (CUDA kernels)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available(),
+    reason="CUDA required for GPU connector benchmarks",
+)
+def test_v2_gpu_connector_from_gpu_bench(benchmark):
+    """Benchmark VLLMPagedMemGPUConnectorV2.from_gpu (GPU → host).
+
+    Uses CUDA kernels (multi_layer_kv_transfer) to gather KV data from
+    all layers at once.
+    """
+    gpu_kv_format = lmc_ops.GPUKVFormat.NL_X_TWO_NB_BS_NH_HS
+    allocator = PinMemoryAllocator(1024 * 1024 * 1024)
+    kvcaches = generate_kv_cache_paged_list_tensors(
+        num_blocks=NUM_BLOCKS,
+        device=DEVICE,
+        block_size=BLOCK_SIZE,
+        gpu_kv_format=gpu_kv_format,
+    )
+    slot_mapping = _make_slot_mapping(NUM_BLOCKS, BLOCK_SIZE, NUM_TOKENS)
+
+    connector = VLLMPagedMemGPUConnectorV2(
+        HIDDEN_DIM,
+        NUM_LAYERS,
+        use_gpu=True,
+        chunk_size=CHUNK_SIZE,
+        dtype=kvcaches[0].dtype,
+        device=DEVICE,
+    )
+
+    shape = connector.get_shape(CHUNK_SIZE)
+    memory_obj = allocator.allocate(shape, kvcaches[0].dtype)
+
+    benchmark.pedantic(
+        _run_v2_from_gpu,
+        args=(connector, memory_obj, slot_mapping, kvcaches, 0, CHUNK_SIZE),
+        rounds=50,
+        iterations=50,
+        warmup_rounds=5,
+    )
+
+    allocator.free(memory_obj)
+    assert allocator.memcheck()
+    allocator.close()
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available(),
+    reason="CUDA required for GPU connector benchmarks",
+)
+def test_v2_gpu_connector_to_gpu_bench(benchmark):
+    """Benchmark VLLMPagedMemGPUConnectorV2.to_gpu (host → GPU).
+
+    Uses CUDA kernels (multi_layer_kv_transfer) to scatter KV data to
+    all layers at once.
+    """
+    gpu_kv_format = lmc_ops.GPUKVFormat.NL_X_TWO_NB_BS_NH_HS
+    allocator = PinMemoryAllocator(1024 * 1024 * 1024)
+    kvcaches_src = generate_kv_cache_paged_list_tensors(
+        num_blocks=NUM_BLOCKS,
+        device=DEVICE,
+        block_size=BLOCK_SIZE,
+        gpu_kv_format=gpu_kv_format,
+    )
+    kvcaches_dst = generate_kv_cache_paged_list_tensors(
+        num_blocks=NUM_BLOCKS,
+        device=DEVICE,
+        block_size=BLOCK_SIZE,
+        gpu_kv_format=gpu_kv_format,
+    )
+    dtype = kvcaches_src[0].dtype
+    slot_mapping = _make_slot_mapping(NUM_BLOCKS, BLOCK_SIZE, NUM_TOKENS)
+
+    connector = VLLMPagedMemGPUConnectorV2(
+        HIDDEN_DIM,
+        NUM_LAYERS,
+        use_gpu=True,
+        chunk_size=CHUNK_SIZE,
+        dtype=dtype,
+        device=DEVICE,
+    )
+
+    shape = connector.get_shape(CHUNK_SIZE)
+    memory_obj = allocator.allocate(shape, dtype)
+
+    # Populate memory_obj first
+    _run_v2_from_gpu(connector, memory_obj, slot_mapping, kvcaches_src, 0, CHUNK_SIZE)
+
+    benchmark.pedantic(
+        _run_v2_to_gpu,
+        args=(connector, memory_obj, slot_mapping, kvcaches_dst, 0, CHUNK_SIZE),
+        rounds=50,
+        iterations=50,
+        warmup_rounds=5,
+    )
+
+    allocator.free(memory_obj)
+    assert allocator.memcheck()
+    allocator.close()
+
+
+# ---------------------------------------------------------------------------
+# Benchmark: VLLMPagedMemXPUConnectorV2  (pure PyTorch index ops)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available(),
+    reason="CUDA required for GPU connector benchmarks",
+)
+def test_v2_xpu_connector_from_gpu_bench(benchmark, mock_xpu_as_cuda):
+    """Benchmark VLLMPagedMemXPUConnectorV2.from_gpu (GPU → host).
+
+    Uses pure PyTorch index_select to gather KV data from all layers
+    at once.
+    """
+    allocator = PinMemoryAllocator(1024 * 1024 * 1024)
+    kvcaches = generate_kv_cache_paged_list_tensors(
+        num_blocks=NUM_BLOCKS,
+        device=DEVICE,
+        block_size=BLOCK_SIZE,
+    )
+    slot_mapping = _make_slot_mapping(NUM_BLOCKS, BLOCK_SIZE, NUM_TOKENS)
+
+    connector = VLLMPagedMemXPUConnectorV2(HIDDEN_DIM, NUM_LAYERS)
+
+    shape = connector.get_shape(CHUNK_SIZE)
+    dtype = kvcaches[0].dtype
+    memory_obj = allocator.allocate(shape, dtype)
+
+    benchmark.pedantic(
+        _run_v2_from_gpu,
+        args=(connector, memory_obj, slot_mapping, kvcaches, 0, CHUNK_SIZE),
+        rounds=50,
+        iterations=50,
+        warmup_rounds=5,
+    )
+
+    allocator.free(memory_obj)
+    assert allocator.memcheck()
+    allocator.close()
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available(),
+    reason="CUDA required for GPU connector benchmarks",
+)
+def test_v2_xpu_connector_to_gpu_bench(benchmark, mock_xpu_as_cuda):
+    """Benchmark VLLMPagedMemXPUConnectorV2.to_gpu (host → GPU).
+
+    Uses pure PyTorch index_copy_ to scatter KV data to all layers
+    at once.
+    """
+    allocator = PinMemoryAllocator(1024 * 1024 * 1024)
+    kvcaches_src = generate_kv_cache_paged_list_tensors(
+        num_blocks=NUM_BLOCKS,
+        device=DEVICE,
+        block_size=BLOCK_SIZE,
+    )
+    kvcaches_dst = generate_kv_cache_paged_list_tensors(
+        num_blocks=NUM_BLOCKS,
+        device=DEVICE,
+        block_size=BLOCK_SIZE,
+    )
+    dtype = kvcaches_src[0].dtype
+    slot_mapping = _make_slot_mapping(NUM_BLOCKS, BLOCK_SIZE, NUM_TOKENS)
+
+    connector = VLLMPagedMemXPUConnectorV2(HIDDEN_DIM, NUM_LAYERS)
+
+    shape = connector.get_shape(CHUNK_SIZE)
+    memory_obj = allocator.allocate(shape, dtype)
+
+    # Populate memory_obj first
+    _run_v2_from_gpu(connector, memory_obj, slot_mapping, kvcaches_src, 0, CHUNK_SIZE)
+
+    benchmark.pedantic(
+        _run_v2_to_gpu,
+        args=(connector, memory_obj, slot_mapping, kvcaches_dst, 0, CHUNK_SIZE),
+        rounds=50,
+        iterations=50,
+        warmup_rounds=5,
+    )
+
+    allocator.free(memory_obj)
+    assert allocator.memcheck()
+    allocator.close()
+
+
+# ---------------------------------------------------------------------------
+# V2 direct comparison: side-by-side timing with torch.cuda.Event
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available(),
+    reason="CUDA required for GPU connector benchmarks",
+)
+def test_v2_gpu_vs_xpu_connector_comparison(mock_xpu_as_cuda):
+    """Side-by-side timing comparison of V2 GPU connector (CUDA kernels)
+    vs V2 XPU connector (pure PyTorch ops).
+
+    Both connectors use the same ``from_gpu`` / ``to_gpu`` API that
+    transfers all layers in a single call.
+
+    Prints a summary table with from_gpu and to_gpu timings for both
+    approaches.  This test always passes — it is informational only.
+    """
+    gpu_kv_format = lmc_ops.GPUKVFormat.NL_X_TWO_NB_BS_NH_HS
+    num_warmup = 5
+    num_runs = 50
+
+    pin_allocator = PinMemoryAllocator(1024 * 1024 * 1024)
+
+    kvcaches_src = generate_kv_cache_paged_list_tensors(
+        num_blocks=NUM_BLOCKS,
+        device=DEVICE,
+        block_size=BLOCK_SIZE,
+        gpu_kv_format=gpu_kv_format,
+    )
+    kvcaches_dst_gpu = generate_kv_cache_paged_list_tensors(
+        num_blocks=NUM_BLOCKS,
+        device=DEVICE,
+        block_size=BLOCK_SIZE,
+        gpu_kv_format=gpu_kv_format,
+    )
+    kvcaches_dst_xpu = generate_kv_cache_paged_list_tensors(
+        num_blocks=NUM_BLOCKS,
+        device=DEVICE,
+        block_size=BLOCK_SIZE,
+        gpu_kv_format=gpu_kv_format,
+    )
+    dtype = kvcaches_src[0].dtype
+    slot_mapping = _make_slot_mapping(NUM_BLOCKS, BLOCK_SIZE, NUM_TOKENS)
+
+    # ---- V2 GPU connector setup ----
+    gpu_connector = VLLMPagedMemGPUConnectorV2(
+        HIDDEN_DIM,
+        NUM_LAYERS,
+        use_gpu=True,
+        chunk_size=CHUNK_SIZE,
+        dtype=dtype,
+        device=DEVICE,
+    )
+    gpu_shape = gpu_connector.get_shape(CHUNK_SIZE)
+    gpu_mem_obj = pin_allocator.allocate(gpu_shape, dtype)
+
+    # ---- V2 XPU connector setup ----
+    xpu_connector = VLLMPagedMemXPUConnectorV2(HIDDEN_DIM, NUM_LAYERS)
+    xpu_shape = xpu_connector.get_shape(CHUNK_SIZE)
+    xpu_mem_obj = pin_allocator.allocate(xpu_shape, dtype)
+
+    def _timed_cuda(fn, warmup: int, runs: int) -> float:
+        """Return median GPU time in milliseconds."""
+        for _ in range(warmup):
+            fn()
+
+        times = []
+        for _ in range(runs):
+            start_event = torch.cuda.Event(enable_timing=True)
+            end_event = torch.cuda.Event(enable_timing=True)
+            start_event.record()
+            fn()
+            end_event.record()
+            torch.cuda.synchronize()
+            times.append(start_event.elapsed_time(end_event))
+
+        times.sort()
+        return times[len(times) // 2]  # median
+
+    # ---- from_gpu benchmarks ----
+    gpu_from_gpu_ms = _timed_cuda(
+        lambda: _run_v2_from_gpu(
+            gpu_connector, gpu_mem_obj, slot_mapping, kvcaches_src, 0, CHUNK_SIZE
+        ),
+        warmup=num_warmup,
+        runs=num_runs,
+    )
+
+    xpu_from_gpu_ms = _timed_cuda(
+        lambda: _run_v2_from_gpu(
+            xpu_connector, xpu_mem_obj, slot_mapping, kvcaches_src, 0, CHUNK_SIZE
+        ),
+        warmup=num_warmup,
+        runs=num_runs,
+    )
+
+    # ---- to_gpu benchmarks ----
+    # Populate memory objs first
+    _run_v2_from_gpu(
+        gpu_connector, gpu_mem_obj, slot_mapping, kvcaches_src, 0, CHUNK_SIZE
+    )
+    _run_v2_from_gpu(
+        xpu_connector, xpu_mem_obj, slot_mapping, kvcaches_src, 0, CHUNK_SIZE
+    )
+
+    gpu_to_gpu_ms = _timed_cuda(
+        lambda: _run_v2_to_gpu(
+            gpu_connector, gpu_mem_obj, slot_mapping, kvcaches_dst_gpu, 0, CHUNK_SIZE
+        ),
+        warmup=num_warmup,
+        runs=num_runs,
+    )
+
+    xpu_to_gpu_ms = _timed_cuda(
+        lambda: _run_v2_to_gpu(
+            xpu_connector, xpu_mem_obj, slot_mapping, kvcaches_dst_xpu, 0, CHUNK_SIZE
+        ),
+        warmup=num_warmup,
+        runs=num_runs,
+    )
+
+    # ---- Print comparison table ----
+    header = (
+        f"\n{'=' * 75}\n"
+        f"  Performance Comparison: V2 GPU (CUDA) vs V2 XPU (PyTorch)\n"
+        f"  Config: {NUM_LAYERS} layers, {NUM_HEADS} heads, "
+        f"head_size={HEAD_SIZE}, chunk={CHUNK_SIZE} tokens\n"
+        f"{'=' * 75}"
+    )
+    row_fmt = "  {:<35s} {:>12.3f} ms  {:>12.3f} ms  {:>8.2f}x"
+    print(header)
+    print(
+        f"  {'Operation':<35s} {'V2 GPU (CUDA)':>15s}  "
+        f"{'V2 XPU (PyTorch)':>15s}  {'Ratio':>8s}"
+    )
+    print(f"  {'-' * 35} {'-' * 15}  {'-' * 15}  {'-' * 8}")
+    print(
+        row_fmt.format(
+            "from_gpu (device → host)",
+            gpu_from_gpu_ms,
+            xpu_from_gpu_ms,
+            xpu_from_gpu_ms / gpu_from_gpu_ms if gpu_from_gpu_ms > 0 else float("inf"),
+        )
+    )
+    print(
+        row_fmt.format(
+            "to_gpu (host → device)",
+            gpu_to_gpu_ms,
+            xpu_to_gpu_ms,
+            xpu_to_gpu_ms / gpu_to_gpu_ms if gpu_to_gpu_ms > 0 else float("inf"),
+        )
+    )
+    print(f"{'=' * 75}\n")
+
+    # Cleanup
+    pin_allocator.free(gpu_mem_obj)
+    pin_allocator.free(xpu_mem_obj)
+
+    assert pin_allocator.memcheck()
     pin_allocator.close()
