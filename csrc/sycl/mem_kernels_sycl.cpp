@@ -1044,6 +1044,8 @@ void reshape_and_cache_back_flash(torch::Tensor& key_value,
                                   torch::Tensor& slot_mapping,
                                   const int layer_idx) {
   // Stage CPU tensor to device for this H2D operation.
+  // No direction check needed: this function is always H2D
+  // (key_value → key_cache/value_cache).
   torch::Tensor staged_kv;
   torch::Tensor& kv_ref = key_value;
   if (key_value.device().is_cpu()) {
