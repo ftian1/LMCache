@@ -58,6 +58,40 @@ def _stage_to_device(
     return tensor.to(target_device, non_blocking=True)
 
 
+def _ensure_staging_buffer(
+    src: torch.Tensor,
+    staging: Optional[torch.Tensor],
+    device: torch.device,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Return a device-resident copy of *src* using a reusable staging buffer.
+
+    If *staging* is ``None`` or its shape/dtype do not match *src*, a
+    new device tensor is allocated.  Otherwise the existing buffer is
+    reused, eliminating the ``sycl::malloc_device`` / ``sycl::free``
+    overhead that would occur with a fresh ``tensor.to(device)`` call.
+
+    Args:
+        src: Source tensor (typically on CPU).
+        staging: Previous staging buffer (may be ``None`` on first call).
+        device: Target XPU device.
+
+    Returns:
+        A ``(device_tensor, staging_buffer)`` tuple.  The caller
+        should keep ``staging_buffer`` and pass it back on the next
+        call so the allocation can be reused.
+    """
+    if src.is_xpu:
+        return src, staging  # type: ignore[return-value]
+    if staging is None or staging.shape != src.shape or staging.dtype != src.dtype:
+        staging = torch.empty(
+            src.shape,
+            dtype=src.dtype,
+            device=device,
+        )
+    staging.copy_(src, non_blocking=True)
+    return staging, staging
+
+
 class VLLMPagedMemXPUConnectorV2(GPUConnectorInterface):
     """
     The GPU KV cache should be a nested tuple of K and V tensors.
@@ -1068,8 +1102,8 @@ class VLLMPagedMemLayerwiseXPUConnector(GPUConnectorInterface):
             assert tmp_gpu_buffer_obj.tensor is not None
 
         # Reusable per-chunk staging buffer for the use_gpu=False path.
-        # Allocated lazily on first use and reused across layers /
-        # chunks to avoid per-call sycl::malloc_device / sycl::free.
+        # Allocated lazily on first use and reused across layers within
+        # a single batched_to_gpu invocation.
         h2d_staging: Optional[torch.Tensor] = None
 
         offset = starts[0]
@@ -1105,16 +1139,9 @@ class VLLMPagedMemLayerwiseXPUConnector(GPUConnectorInterface):
                     else:
                         # Stage CPU tensor to device using a reusable
                         # buffer, then run device→device scatter.
-                        src = memory_obj.tensor
-                        if not src.is_xpu:
-                            if h2d_staging is None or h2d_staging.shape != src.shape:
-                                h2d_staging = torch.empty(
-                                    src.shape,
-                                    dtype=src.dtype,
-                                    device=self.device,
-                                )
-                            h2d_staging.copy_(src, non_blocking=True)
-                            src = h2d_staging
+                        src, h2d_staging = _ensure_staging_buffer(
+                            memory_obj.tensor, h2d_staging, self.device
+                        )
                         lmc_ops.single_layer_kv_transfer(
                             src,
                             self.kvcaches[layer_id],
@@ -1623,6 +1650,8 @@ class SGLangLayerwiseXPUConnector(GPUConnectorInterface):
             assert tmp_gpu_buffer_obj.tensor is not None
 
         # Reusable per-chunk staging buffer for the use_gpu=False path.
+        # Allocated lazily on first use and reused across layers within
+        # a single batched_to_gpu invocation.
         h2d_staging: Optional[torch.Tensor] = None
 
         offset = starts[0]
@@ -1644,16 +1673,9 @@ class SGLangLayerwiseXPUConnector(GPUConnectorInterface):
                 else:
                     # Stage CPU tensor to device using a reusable
                     # buffer, then run device→device scatter.
-                    src = memory_obj.tensor
-                    if not src.is_xpu:
-                        if h2d_staging is None or h2d_staging.shape != src.shape:
-                            h2d_staging = torch.empty(
-                                src.shape,
-                                dtype=src.dtype,
-                                device=self.device,
-                            )
-                        h2d_staging.copy_(src, non_blocking=True)
-                        src = h2d_staging
+                    src, h2d_staging = _ensure_staging_buffer(
+                        memory_obj.tensor, h2d_staging, self.device
+                    )
                     lmc_ops.single_layer_kv_transfer_sgl(
                         src,
                         self.kvcaches[0][layer_id],
