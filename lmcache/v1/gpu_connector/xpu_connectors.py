@@ -28,6 +28,36 @@ import lmcache.c_ops as lmc_ops
 logger = init_logger(__name__)
 
 
+def _stage_to_device(
+    tensor: torch.Tensor,
+    target_device: torch.device,
+) -> torch.Tensor:
+    """Stage a CPU tensor to a target XPU device via bulk DMA copy.
+
+    On Intel XPU, GPU kernels that read from USM-host (pinned CPU)
+    memory suffer from high PCIe round-trip latency on every load.
+    Staging the CPU tensor into a contiguous device buffer first and
+    then running the scatter kernel with both source and destination
+    on device avoids this bottleneck.
+
+    When the caller can pre-allocate a reusable device buffer (e.g.
+    inside a ``batched_to_gpu`` loop), prefer using
+    ``staging_buf.copy_(tensor, non_blocking=True)`` directly to
+    avoid per-call ``sycl::malloc_device`` / ``sycl::free`` overhead.
+
+    Args:
+        tensor: The source tensor (may be CPU or device).
+        target_device: The XPU device to stage onto.
+
+    Returns:
+        The tensor on *target_device*.  If *tensor* is already on
+        *target_device* it is returned as-is (no copy).
+    """
+    if tensor.device == target_device:
+        return tensor
+    return tensor.to(target_device, non_blocking=True)
+
+
 class VLLMPagedMemXPUConnectorV2(GPUConnectorInterface):
     """
     The GPU KV cache should be a nested tuple of K and V tensors.
@@ -189,7 +219,7 @@ class VLLMPagedMemXPUConnectorV2(GPUConnectorInterface):
         skip_prefix_n_tokens = min(end - start, max(0, vllm_cached - start))
 
         lmc_ops.multi_layer_kv_transfer(
-            memory_obj.tensor,
+            _stage_to_device(memory_obj.tensor, self.device),
             kv_cache_pointers,
             slot_mapping[start:end],
             self.device,
@@ -387,7 +417,7 @@ class VLLMPagedMemXPUConnectorV3(GPUConnectorInterface):
             memory_obj_tensor = memory_obj.get_tensor(i)
             assert memory_obj_tensor is not None
             lmc_ops.multi_layer_kv_transfer(
-                memory_obj_tensor,
+                _stage_to_device(memory_obj_tensor, self.device),
                 kv_cache_pointer,
                 slot_mapping[start:end],
                 self.device,
@@ -1021,6 +1051,10 @@ class VLLMPagedMemLayerwiseXPUConnector(GPUConnectorInterface):
 
         num_tokens = len(slot_mapping_full)
 
+        # Ensure slot_mapping is on device to avoid per-work-item
+        # PCIe reads inside the scatter kernel.
+        slot_mapping_full = _stage_to_device(slot_mapping_full, self.device)
+
         tmp_gpu_buffer_obj: Optional[MemoryObj] = None
         if self.use_gpu:
             buffer_shape = self.get_shape(num_tokens)
@@ -1032,6 +1066,11 @@ class VLLMPagedMemLayerwiseXPUConnector(GPUConnectorInterface):
                 "Failed to allocate GPU buffer in GPUConnector"
             )
             assert tmp_gpu_buffer_obj.tensor is not None
+
+        # Reusable per-chunk staging buffer for the use_gpu=False path.
+        # Allocated lazily on first use and reused across layers /
+        # chunks to avoid per-call sycl::malloc_device / sycl::free.
+        h2d_staging: Optional[torch.Tensor] = None
 
         offset = starts[0]
         current_stream = torch.xpu.current_stream()
@@ -1064,10 +1103,22 @@ class VLLMPagedMemLayerwiseXPUConnector(GPUConnectorInterface):
                             memory_obj.tensor, non_blocking=True
                         )
                     else:
+                        # Stage CPU tensor to device using a reusable
+                        # buffer, then run device→device scatter.
+                        src = memory_obj.tensor
+                        if not src.is_xpu:
+                            if h2d_staging is None or h2d_staging.shape != src.shape:
+                                h2d_staging = torch.empty(
+                                    src.shape,
+                                    dtype=src.dtype,
+                                    device=self.device,
+                                )
+                            h2d_staging.copy_(src, non_blocking=True)
+                            src = h2d_staging
                         lmc_ops.single_layer_kv_transfer(
-                            memory_obj.tensor,
+                            src,
                             self.kvcaches[layer_id],
-                            slot_mapping[start:end],
+                            _stage_to_device(slot_mapping[start:end], self.device),
                             lmc_ops.TransferDirection.H2D,
                             self.gpu_kv_format,
                             token_major=True,
@@ -1150,6 +1201,10 @@ class VLLMPagedMemLayerwiseXPUConnector(GPUConnectorInterface):
         slot_mapping_full = torch.cat(slot_mapping_chunks, dim=0)
 
         num_tokens = len(slot_mapping_full)
+
+        # Ensure slot_mapping is on device to avoid per-work-item
+        # PCIe reads inside the gather kernel.
+        slot_mapping_full = _stage_to_device(slot_mapping_full, self.device)
 
         tmp_gpu_buffer_obj: Optional[MemoryObj] = None
         if self.use_gpu:
@@ -1344,11 +1399,12 @@ class SGLangXPUConnector(GPUConnectorInterface):
         slot_mapping: torch.Tensor = kwargs["slot_mapping"]
 
         kv_cache_pointers = self._initialize_pointers(kvcaches)
+        target_device = kvcaches[0][0].device
         lmc_ops.multi_layer_kv_transfer_unilateral(
-            memory_obj.tensor,
+            _stage_to_device(memory_obj.tensor, target_device),
             kv_cache_pointers,
             slot_mapping[start - offset : end - offset],
-            kvcaches[0][0].device,
+            target_device,
             self.page_buffer_size,
             lmc_ops.TransferDirection.H2D,
             self.gpu_kv_format,
@@ -1549,6 +1605,9 @@ class SGLangLayerwiseXPUConnector(GPUConnectorInterface):
 
         num_tokens = len(slot_mapping_full)
 
+        # Ensure slot_mapping is on device.
+        slot_mapping_full = _stage_to_device(slot_mapping_full, self.device)
+
         if self.use_gpu:
             buffer_shape = self.get_shape(num_tokens)
 
@@ -1562,6 +1621,9 @@ class SGLangLayerwiseXPUConnector(GPUConnectorInterface):
                 "Failed to allocate GPU buffer in GPUConnector"
             )
             assert tmp_gpu_buffer_obj.tensor is not None
+
+        # Reusable per-chunk staging buffer for the use_gpu=False path.
+        h2d_staging: Optional[torch.Tensor] = None
 
         offset = starts[0]
 
@@ -1580,11 +1642,23 @@ class SGLangLayerwiseXPUConnector(GPUConnectorInterface):
                         memory_obj.tensor, non_blocking=True
                     )
                 else:
+                    # Stage CPU tensor to device using a reusable
+                    # buffer, then run device→device scatter.
+                    src = memory_obj.tensor
+                    if not src.is_xpu:
+                        if h2d_staging is None or h2d_staging.shape != src.shape:
+                            h2d_staging = torch.empty(
+                                src.shape,
+                                dtype=src.dtype,
+                                device=self.device,
+                            )
+                        h2d_staging.copy_(src, non_blocking=True)
+                        src = h2d_staging
                     lmc_ops.single_layer_kv_transfer_sgl(
-                        memory_obj.tensor,
+                        src,
                         self.kvcaches[0][layer_id],
                         self.kvcaches[1][layer_id],
-                        slot_mapping[start:end],
+                        _stage_to_device(slot_mapping[start:end], self.device),
                         lmc_ops.TransferDirection.H2D,
                         token_major=True,
                     )
@@ -1662,6 +1736,9 @@ class SGLangLayerwiseXPUConnector(GPUConnectorInterface):
         slot_mapping_full = torch.cat(slot_mapping_chunks, dim=0)
 
         num_tokens = len(slot_mapping_full)
+
+        # Ensure slot_mapping is on device.
+        slot_mapping_full = _stage_to_device(slot_mapping_full, self.device)
 
         if self.use_gpu:
             buffer_shape = self.get_shape(num_tokens)

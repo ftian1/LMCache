@@ -192,7 +192,12 @@ inline int64_t key_value_base_offset(const int k_or_v, const int layer_idx,
 }  // namespace lmc
 
 // ---------------------------------------------------------------------------
-// Device-staging helper for H2D transfers.
+// Device-staging helper for H2D transfers  (HISTORICAL — kept for reference).
+//
+// Staging is now performed in the Python connector layer
+// (lmcache/v1/gpu_connector/xpu_connectors.py) which pre-allocates a
+// reusable device buffer to amortise sycl::malloc_device / sycl::free
+// overhead across all layers.  See ``_stage_to_device()`` in that file.
 //
 // On Intel XPU, GPU kernels that read from USM-host (pinned CPU)
 // memory suffer from high PCIe round-trip latency on every load.
@@ -209,22 +214,7 @@ inline int64_t key_value_base_offset(const int k_or_v, const int layer_idx,
 // The fix is to stage CPU tensors into a temporary device buffer
 // using a single bulk DMA copy (contiguous memcpy), then run the
 // scatter kernel with both source and destination on device.
-//
-// `stage_to_device` performs this staging on the **current XPU
-// stream** so subsequent kernel launches on the same stream see the
-// data without explicit synchronisation.
 // ---------------------------------------------------------------------------
-inline torch::Tensor stage_to_device(const torch::Tensor& tensor,
-                                     const torch::Device& target_device) {
-  if (tensor.device() == target_device) {
-    return tensor;  // already on device — no copy
-  }
-  // Allocate a device tensor and enqueue a bulk memcpy on the
-  // current stream.  non_blocking=true keeps this asynchronous;
-  // ordering is guaranteed because the kernel launches on the same
-  // stream.
-  return tensor.to(target_device, /*non_blocking=*/true);
-}
 
 // ---------------------------------------------------------------------------
 // Pointer helper -- returns a kernel-accessible pointer of the given type.
