@@ -1,0 +1,4 @@
+# Vendor-specific runtime deps baked into install_requires by setup.py
+# when building for SYCL/Intel XPU (BUILD_WITH_SYCL=1).
+# CUDA and ROCm packages (cupy-cuda12x, nixl, cupy-rocm-*) are NOT
+# listed here because they are unavailable / unnecessary on Intel XPU systems.

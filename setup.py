@@ -17,6 +17,7 @@ BUILDING_SDIST = "sdist" in sys.argv or os.environ.get("NO_CUDA_EXT", "0") == "1
 
 # New environment variable to choose between CUDA and HIP
 BUILD_WITH_HIP = os.environ.get("BUILD_WITH_HIP", "0") == "1"
+BUILD_WITH_SYCL = os.environ.get("BUILD_WITH_SYCL", "0") == "1"
 
 ENABLE_CXX11_ABI = os.environ.get("ENABLE_CXX11_ABI", "1") == "1"
 
@@ -309,7 +310,12 @@ if __name__ == "__main__":
     ext_modules, cmdclass = get_extension()
 
     install_requires = _read_requirements(ROOT_DIR / "requirements" / "common.txt")
-    core_file = "rocm_core.txt" if BUILD_WITH_HIP else "cuda_core.txt"
+    if BUILD_WITH_HIP:
+        core_file = "rocm_core.txt"
+    elif BUILD_WITH_SYCL:
+        core_file = "sycl_core.txt"
+    else:
+        core_file = "cuda_core.txt"
     install_requires += _read_requirements(ROOT_DIR / "requirements" / core_file)
 
     setup(
